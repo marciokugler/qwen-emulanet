@@ -6,10 +6,15 @@ server:
 
 dashboard:
   host: "0.0.0.0"
-  port: 8080
+  # Avoid 8080 on Windows: wslrelay.exe often forwards a WSL app to
+  # 127.0.0.1:8080, which shadows a 0.0.0.0:8080 bind for localhost requests.
+  port: 8081
 
 splunk_hec:
   enabled: false
+  # Must be https:// — Splunk enables SSL on HEC by default
+  # (enableSplunkHTTPSSL=true). Plain http to 8088 fails with
+  # "connection reset by peer". Leave verify_ssl false for self-signed certs.
   url: "https://your-splunk:8088/services/collector"
   token: "your-hec-token-here"
   index: "main"

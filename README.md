@@ -38,8 +38,14 @@ python run.py
 ```
 
 - **Meraki API mock** → http://localhost:5000
-- **Dashboard** → http://localhost:8080
+- **Dashboard** → http://localhost:8081
 - **API key** → `6789123456789012345678901234567890123456`
+
+> The dashboard defaults to **8081**, not 8080. On Windows `wslrelay.exe`
+> frequently forwards a WSL-hosted app to `127.0.0.1:8080`; that binding is
+> more specific than our `0.0.0.0:8080`, so localhost requests silently reach
+> the other app and the bind raises no error. On startup the emulator now
+> self-checks both ports and logs a warning if something else is answering.
 
 ## Splunk test instance
 
@@ -160,20 +166,29 @@ Intelligence's value is walking **event → device → topology**.
 
 ## Verification
 
-Two scripts assert behaviour rather than just printing it:
+Three scripts assert behaviour rather than just printing it:
 
 ```bash
-python verify_topology.py    # schema + business context + scenario references
-python verify_scenarios.py   # live end-to-end propagation (needs run.py up)
+python verify_topology.py     # schema + business context + scenario references
+python verify_scenarios.py    # live scenario propagation (needs run.py up)
+python verify_splunk_e2e.py   # live emulator -> HEC -> Splunk search (needs both up)
 ```
 
-`verify_topology.py` checks response shapes against the documented Meraki
+**`verify_topology.py`** checks response shapes against the documented Meraki
 schemas, asserts all five device families appear as discovered nodes, that LLDP
 discovery is **bidirectional**, that uncabled ports do not report `Connected`,
-and that every scenario references a real device and network.
+that no device silently falls back to a generic system description, and that
+every scenario references a real device and network.
 
-`verify_scenarios.py` triggers a live scenario and asserts the flap reaches the
-link state, the Meraki port status, event attribution, and discovery omission.
+**`verify_scenarios.py`** triggers a live scenario and asserts the port flap
+reaches the L2 link state, the Meraki port status, event attribution, network
+scoping, and removal from `nodes/discovered`.
+
+**`verify_splunk_e2e.py`** posts a uniquely-marked webhook through HEC, triggers
+a live scenario, then queries Splunk over REST to confirm the event is
+searchable and that business context survives ingestion. It uses the REST API
+rather than `splunk search` — the CLI fails with permission errors in this
+container (it runs as root while Splunk files are owned by `splunk`).
 
 ## Project layout
 
@@ -196,6 +211,7 @@ web/index.html           # Dashboard — topology, sites, events, scenarios
 splunk/docker-compose.yml
 verify_topology.py
 verify_scenarios.py
+verify_splunk_e2e.py     # Live emulator -> HEC -> Splunk search
 build_preview.py         # Snapshots live data into a static HTML preview
 ```
 

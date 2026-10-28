@@ -13,6 +13,7 @@ import yaml
 from pathlib import Path
 
 import uvicorn
+import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -477,6 +478,9 @@ async def main():
     server_api = uvicorn.Server(config_api)
     server_dash = uvicorn.Server(config_dash)
 
+    verify_task = asyncio.create_task(
+        _verify_reachable(api_port, dash_port, settings["server"]["api_key"]))
+
     try:
         await asyncio.gather(
             server_api.serve(),
@@ -485,10 +489,72 @@ async def main():
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down...")
     finally:
+        verify_task.cancel()
         background_task.cancel()
         await scenario_engine.stop()
         if hec_sender:
             await hec_sender.close()
+
+
+async def _verify_reachable(api_port: int, dash_port: int, api_key: str):
+    """Confirm both servers actually answer on localhost.
+
+    Binding 0.0.0.0:<port> can succeed while another process holds the more
+    specific 127.0.0.1:<port> — on Windows wslrelay.exe does exactly this when
+    forwarding a WSL app. The bind raises no error, so without this check the
+    dashboard silently serves someone else's app.
+    """
+    await asyncio.sleep(4)
+
+    # (label, url, JSON keys that must be present to prove it is really us)
+    checks = [
+        ("Meraki API", f"http://127.0.0.1:{api_port}/health", {"status", "devices", "networks"}),
+        ("Dashboard", f"http://127.0.0.1:{dash_port}/api/status",
+         {"organization", "total_devices", "scenario_engine"}),
+    ]
+
+    for label, url, required_keys in checks:
+        port = url.split(":")[2].split("/")[0]
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(url)
+
+            if resp.status_code != 200:
+                logger.warning(f"{label} on port {port} answered HTTP {resp.status_code}")
+                continue
+
+            try:
+                body = resp.json()
+            except ValueError:
+                logger.warning(
+                    f"{label} on port {port} returned non-JSON — another process is "
+                    f"shadowing this port. Response began: {resp.text[:150]!r}")
+                continue
+
+            missing = required_keys - set(body)
+            if missing:
+                logger.warning(
+                    f"{label} on port {port} answered JSON but is missing {sorted(missing)} "
+                    f"— another process is likely shadowing this port. Got keys: "
+                    f"{sorted(body)[:8]}")
+            else:
+                logger.info(f"{label} verified reachable on port {port}")
+        except Exception as exc:
+            logger.error(f"{label} not reachable on port {port}: {exc}")
+
+    # Prove the API key path works, since the add-on depends on it.
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                f"http://127.0.0.1:{api_port}/api/v1/organizations",
+                headers={"X-Cisco-Meraki-API-Key": api_key},
+            )
+        if resp.status_code == 200:
+            logger.info("Meraki API auth verified with the configured API key")
+        else:
+            logger.warning(f"Meraki API auth check returned HTTP {resp.status_code}")
+    except Exception as exc:
+        logger.error(f"Meraki API auth check failed: {exc}")
 
 
 if __name__ == "__main__":
