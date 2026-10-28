@@ -1,0 +1,339 @@
+# Retail scenario library for Northwind Retail Group.
+#
+# Scenarios are ordered by business impact so the demo tells the story Cisco
+# actually sells: revenue-affecting events first (POS, SD-WAN), then loss
+# prevention and cold chain, then security and growth.
+#
+# Every scenario resolves to Meraki-native data — device status, events,
+# security events, sensor readings, port/link state — so Splunk Network
+# Intelligence can correlate event -> device -> topology.
+
+scenarios:
+  # =========================================================================
+  # REVENUE IMPACT — POS and store connectivity
+  # =========================================================================
+  - name: "pos_lane_outage_flagship"
+    description: "Store 0042 NYC — POS lane switch port flaps, register 3 offline during trading hours"
+    trigger: "scheduled"
+    schedule: "0 */6 * * *"
+    duration_minutes: 12
+    business_impact: "Card-present transactions halted on register 3. Direct revenue loss."
+    actions:
+      - type: "port_state_change"
+        device: "Q2QN-S042-MS01"
+        port: "11"
+        state: "down"
+        duration_seconds: 90
+      - type: "generate_event"
+        networkId: "L_646829496405521106"
+        device: "Q2QN-S042-MS01"
+        eventType: "port_status_change"
+        severity: "critical"
+        description: "Port 11 (POS lane 3 uplink) went down on Store0042-NYC-Switch"
+      - type: "generate_event"
+        networkId: "L_646829496405521106"
+        device: "Q2QN-S042-MX01"
+        eventType: "client_disconnected"
+        severity: "high"
+        description: "POS-LANE-03 lost connectivity — PCI cardholder data environment affected"
+
+  - name: "store_gateway_wan_degradation"
+    description: "Store 0203 Chicago — primary WAN degrades, high latency and packet loss"
+    trigger: "scheduled"
+    schedule: "30 */4 * * *"
+    duration_minutes: 15
+    business_impact: "Slow POS authorization, scanner timeouts, degraded guest WiFi."
+    actions:
+      - type: "set_device_status"
+        device: "Q2QN-S0203-MX01"
+        status: "degraded"
+        uplink_status: "Failing"
+        latency_ms: 280
+        loss_percent: 9
+      - type: "generate_event"
+        networkId: "L_646829496405521108"
+        device: "Q2QN-S0203-MX01"
+        eventType: "wan_latency_high"
+        severity: "warning"
+        description: "Store0203-CHI-Gateway WAN latency 280ms exceeds 150ms threshold"
+      - type: "generate_event"
+        networkId: "L_646829496405521108"
+        device: "Q2QN-S0203-MX01"
+        eventType: "vpn_tunnel_degraded"
+        severity: "warning"
+        description: "Auto VPN tunnel to HQ hub degraded — 9% packet loss"
+
+  - name: "hq_firewall_ha_failover"
+    description: "HQ Seattle — primary SD-WAN hub firewall fails, secondary takes over"
+    trigger: "scheduled"
+    schedule: "0 3 * * 0"
+    duration_minutes: 20
+    business_impact: "All store and DC VPN tunnels re-converge to the secondary hub."
+    actions:
+      - type: "set_device_status"
+        device: "Q2QN-HQ01-MX01"
+        status: "offline"
+      - type: "vpn_status_change"
+        tunnel:
+          from: "Q2QN-HQ01-MX01"
+          to: "Q2QN-S042-MX01"
+        status: "down"
+        duration_seconds: 120
+      - type: "generate_event"
+        networkId: "L_646829496405521104"
+        device: "Q2QN-HQ01-MX02"
+        eventType: "ha_failover"
+        severity: "critical"
+        description: "HQ-Seattle-Firewall-Primary failed — Firewall-Secondary now active hub"
+
+  - name: "store_ap_offline_trading_hours"
+    description: "Store 0117 LA — sales floor AP offline, guest and scanner WiFi down"
+    trigger: "random"
+    probability: 0.12
+    interval_minutes: 90
+    duration_minutes: 10
+    business_impact: "Customer WiFi unavailable; inventory handhelds drop off on the sales floor."
+    actions:
+      - type: "set_device_status"
+        device: "Q2QN-S0117-MR01"
+        status: "offline"
+      - type: "generate_event"
+        networkId: "L_646829496405521107"
+        device: "Q2QN-S0117-MR01"
+        eventType: "device_offline"
+        severity: "high"
+        description: "Store0117-LAX-AP-SalesFloor went offline during trading hours"
+
+  # =========================================================================
+  # LOSS PREVENTION AND COLD CHAIN
+  # =========================================================================
+  - name: "lp_camera_offline_pos_lanes"
+    description: "Store 0042 NYC — POS lane camera offline, loss prevention blind spot"
+    trigger: "random"
+    probability: 0.1
+    interval_minutes: 120
+    duration_minutes: 25
+    business_impact: "No video retention for register transactions — PCI DSS audit gap and shrink risk."
+    actions:
+      - type: "set_device_status"
+        device: "Q2QN-S042-MV02"
+        status: "offline"
+      - type: "generate_event"
+        networkId: "L_646829496405521106"
+        device: "Q2QN-S042-MV02"
+        eventType: "camera_offline"
+        severity: "high"
+        description: "Store0042-NYC-Cam-POSLanes offline — POS video retention interrupted"
+
+  - name: "cold_chain_temperature_excursion"
+    description: "DC Reno — cold storage temperature rises above -15C threshold"
+    trigger: "scheduled"
+    schedule: "0 */8 * * *"
+    duration_minutes: 30
+    business_impact: "Product safety risk and shrink. Refrigeration failure in the cold chain."
+    actions:
+      - type: "sensor_reading"
+        device: "Q2QN-DC01-MT01"
+        temperature_c: -8.5
+        humidity_percent: 82
+      - type: "generate_event"
+        networkId: "L_646829496405521105"
+        device: "Q2QN-DC01-MT01"
+        eventType: "sensor_temperature_high"
+        severity: "critical"
+        description: "DC-Reno-Sensor-ColdStore reads -8.5C, above -15C cold chain threshold"
+
+  - name: "hq_server_room_environmental"
+    description: "HQ Seattle — server room temperature and water leak alert"
+    trigger: "scheduled"
+    schedule: "0 14 * * 1-5"
+    duration_minutes: 30
+    business_impact: "Tier-1 site. Server room overheating threatens HQ, PCI logging, and the SD-WAN hub."
+    actions:
+      - type: "sensor_reading"
+        device: "Q2QN-HQ01-MT01"
+        temperature_c: 31.2
+        humidity_percent: 71
+      - type: "generate_event"
+        networkId: "L_646829496405521104"
+        device: "Q2QN-HQ01-MT01"
+        eventType: "sensor_temperature_high"
+        severity: "warning"
+        description: "HQ-Seattle-Sensor-ServerRoom reads 31.2C, above 27C threshold"
+
+  # =========================================================================
+  # SECURITY — network-led XDR story
+  # =========================================================================
+  - name: "pci_segment_intrusion_attempt"
+    description: "Store 0288 Dallas — intrusion attempt against the POS PCI segment"
+    trigger: "random"
+    probability: 0.08
+    interval_minutes: 60
+    business_impact: "Attempted lateral movement into the cardholder data environment."
+    actions:
+      - type: "security_event"
+        device: "Q2QN-S0288-MX01"
+        eventType: "intrusion_attempt"
+        source_ip: "185.220.101.42"
+        destination_ip: "10.45.30.11"
+        protocol: "tcp"
+        port: 445
+        count: 214
+        rule: "Block-SMB-to-POS-PCI"
+      - type: "generate_event"
+        networkId: "L_646829496405521109"
+        device: "Q2QN-S0288-MX01"
+        eventType: "security_intrusion_attempt"
+        severity: "critical"
+        description: "214 SMB attempts from 185.220.101.42 to POS-PCI segment blocked"
+
+  - name: "guest_wifi_brute_force"
+    description: "Store 0203 Chicago — SSH brute force against the store gateway"
+    trigger: "random"
+    probability: 0.06
+    interval_minutes: 90
+    business_impact: "External attack surface on a branch gateway."
+    actions:
+      - type: "security_event"
+        device: "Q2QN-S0203-MX01"
+        eventType: "brute_force_attempt"
+        source_ip: "45.33.32.156"
+        destination_ip: "198.18.44.10"
+        protocol: "tcp"
+        port: 22
+        count: 168
+      - type: "generate_event"
+        networkId: "L_646829496405521108"
+        device: "Q2QN-S0203-MX01"
+        eventType: "security_brute_force"
+        severity: "high"
+        description: "168 SSH login attempts from 45.33.32.156 against Store0203-CHI-Gateway"
+
+  - name: "unauthorized_device_on_pos_vlan"
+    description: "Store 0351 Boston — unknown MAC associated on the POS-PCI VLAN"
+    trigger: "random"
+    probability: 0.05
+    interval_minutes: 120
+    business_impact: "PCI DSS segmentation control event — rogue device on the cardholder VLAN."
+    actions:
+      - type: "security_event"
+        device: "Q2QN-S0351-MS01"
+        eventType: "rogue_device_detected"
+        source_ip: "10.46.30.99"
+        destination_ip: "10.46.30.1"
+        protocol: "tcp"
+        port: 0
+        count: 1
+        rule: "PCI-MAC-Allowlist"
+      - type: "generate_event"
+        networkId: "L_646829496405521110"
+        device: "Q2QN-S0351-MS01"
+        eventType: "security_segmentation_violation"
+        severity: "critical"
+        description: "Unauthorised MAC on POS-PCI VLAN 30 — not in PCI allowlist"
+
+  # =========================================================================
+  # OPERATIONS AND GROWTH
+  # =========================================================================
+  - name: "warehouse_scanner_roaming"
+    description: "DC Reno — scanner clients fail to roam between warehouse zones"
+    trigger: "random"
+    probability: 0.15
+    interval_minutes: 60
+    duration_minutes: 20
+    business_impact: "Pick and putaway slowdowns; forklift terminals stall mid-task."
+    actions:
+      - type: "generate_event"
+        networkId: "L_646829496405521105"
+        device: "Q2QN-DC01-MR01"
+        eventType: "client_roaming_failure"
+        severity: "warning"
+        description: "DC-SCANNER-ZONE-A-07 failed to roam from AP-Warehouse-A to AP-Warehouse-B"
+      - type: "generate_event"
+        networkId: "L_646829496405521105"
+        device: "Q2QN-DC01-MR02"
+        eventType: "high_channel_utilization"
+        severity: "warning"
+        description: "DC-Reno-AP-Warehouse-B 2.4GHz channel utilization at 82%"
+
+  - name: "guest_wifi_saturation_weekend"
+    description: "Store 0042 NYC flagship — guest WiFi saturation at peak weekend traffic"
+    trigger: "scheduled"
+    schedule: "0 12 * * 6,0"
+    duration_minutes: 60
+    business_impact: "Customer experience degradation at the highest-footfall store."
+    actions:
+      - type: "client_density"
+        device: "Q2QN-S042-MR01"
+        client_count: 94
+        channel_utilization: 88
+      - type: "generate_event"
+        networkId: "L_646829496405521106"
+        device: "Q2QN-S042-MR01"
+        eventType: "high_client_density"
+        severity: "warning"
+        description: "Store0042-NYC-AP-SalesFloor at 94 clients, 88% channel utilization"
+
+  - name: "vpn_tunnel_down_dallas"
+    description: "Store 0288 Dallas — Auto VPN tunnel to HQ hub drops"
+    trigger: "random"
+    probability: 0.08
+    interval_minutes: 120
+    business_impact: "Store loses connectivity to HQ merchandising and payment authorization."
+    actions:
+      - type: "vpn_status_change"
+        tunnel:
+          from: "Q2QN-HQ01-MX01"
+          to: "Q2QN-S0288-MX01"
+        status: "down"
+        duration_seconds: 180
+      - type: "generate_event"
+        networkId: "L_646829496405521104"
+        device: "Q2QN-HQ01-MX01"
+        eventType: "vpn_tunnel_down"
+        severity: "critical"
+        description: "Auto VPN tunnel to Store0288-DAL-Gateway is down"
+
+  - name: "fleet_firmware_upgrade_window"
+    description: "Store fleet — scheduled firmware upgrade across standard-format sites"
+    trigger: "scheduled"
+    schedule: "0 1 15 * *"
+    duration_minutes: 45
+    business_impact: "Planned maintenance in the overnight window; no trading impact."
+    actions:
+      - type: "firmware_upgrade"
+        devices:
+          - "Q2QN-S0288-MX01"
+          - "Q2QN-S0351-MX01"
+          - "Q2QN-S0429-MX01"
+          - "Q2QN-S0288-MS01"
+          - "Q2QN-S0351-MS01"
+          - "Q2QN-S0429-MS01"
+        from_version: "mx-18.107.8"
+        to_version: "mx-18.107.22"
+      - type: "generate_event"
+        networkId: "L_646829496405521109"
+        device: "Q2QN-S0288-MX01"
+        eventType: "firmware_upgrade_started"
+        severity: "info"
+        description: "Firmware upgrade window opened for standard-format store fleet"
+
+  - name: "new_store_onboarding_denver"
+    description: "Store 0429 Denver — new site onboarding, devices claiming and provisioning"
+    trigger: "scheduled"
+    schedule: "0 2 * * 3"
+    duration_minutes: 30
+    business_impact: "Growth story — new site brought online with zero-touch provisioning."
+    actions:
+      - type: "generate_event"
+        networkId: "L_646829496405521111"
+        device: "Q2QN-S0429-MX01"
+        eventType: "device_claimed"
+        severity: "info"
+        description: "Store0429-DEN-Gateway claimed to network via zero-touch provisioning"
+      - type: "generate_event"
+        networkId: "L_646829496405521111"
+        device: "Q2QN-S0429-MS01"
+        eventType: "config_template_applied"
+        severity: "info"
+        description: "Standard-format store config template applied to Store0429-DEN-Switch"

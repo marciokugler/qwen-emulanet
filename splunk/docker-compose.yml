@@ -1,0 +1,52 @@
+# Local Splunk Enterprise for testing the emulator.
+#
+# Volumes are persistent so apps you install from Splunkbase (Network
+# Intelligence, Cisco Meraki Add-on) survive container restarts.
+#
+#   docker compose up -d          # start
+#   docker compose logs -f splunk # watch startup
+#   docker compose down           # stop (keeps volumes)
+#   docker compose down -v        # stop and wipe everything
+#
+# Reaching the emulator from inside this container:
+#   The emulator runs on the Windows host, NOT in this network namespace, so
+#   "localhost" will not resolve to it. Use host.docker.internal:
+#     Meraki Add-on Base URL -> http://host.docker.internal:5000/api/v1
+
+services:
+  splunk:
+    image: splunk/splunk:latest
+    container_name: emulanet-splunk
+    hostname: splunk
+    ports:
+      - "8000:8000"   # Web UI
+      - "8088:8088"   # HTTP Event Collector
+      - "8089:8089"   # splunkd management / REST
+      - "9997:9997"   # splunktcp receiving
+    environment:
+      # Both flags are required by current splunk/splunk images. Without
+      # SPLUNK_GENERAL_TERMS the container crash-loops on "License not accepted".
+      # Setting these accepts the Splunk General Terms and the EULA on your behalf:
+      #   https://www.splunk.com/en_us/legal/splunk-general-terms.html
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:-Emulanet2026!}
+      # Fixed HEC token so the emulator config can be committed safely.
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-11111111-1111-1111-1111-111111111111}
+      SPLUNK_APPS_URL: ""
+    volumes:
+      - splunk-etc:/opt/splunk/etc
+      - splunk-var:/opt/splunk/var
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/en-US/account/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  splunk-etc:
+  splunk-var:

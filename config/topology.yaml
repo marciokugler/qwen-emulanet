@@ -1,0 +1,879 @@
+# Northwind Retail Group — Meraki topology
+# Modeled per Cisco Meraki best practice: one organization, one network per physical site.
+# Business context is carried only by fields the real Meraki API exposes:
+#   device name, tags, notes, address, VLAN names, SSID names, network name.
+# Tag convention follows Meraki guidance: lowercase, hyphenated, no spaces or commas,
+# combining a geographic dimension with a functional dimension.
+
+organization:
+  id: "2947"
+  name: "Northwind Retail Group"
+  url: "https://n43.meraki.com/Northwind-Retail/o/2947/manage"
+
+# ---------------------------------------------------------------------------
+# VLAN template — business function is expressed through VLAN names.
+# The same taxonomy is applied per site so Splunk can correlate across stores.
+# ---------------------------------------------------------------------------
+vlan_template:
+  - id: 10
+    name: "Corporate"
+    purpose: "Associate workstations, back-office systems"
+  - id: 20
+    name: "VoIP"
+    purpose: "Store phones, paging, intercom"
+  - id: 30
+    name: "POS-PCI"
+    purpose: "Payment terminals — PCI DSS cardholder data environment"
+  - id: 40
+    name: "Inventory"
+    purpose: "Handheld barcode scanners, RFID readers, receiving"
+  - id: 50
+    name: "Guest-WiFi"
+    purpose: "Customer internet access, captive portal"
+  - id: 60
+    name: "Security-Cameras"
+    purpose: "Loss prevention video surveillance"
+  - id: 70
+    name: "Building-IoT"
+    purpose: "HVAC, lighting, refrigeration controllers"
+  - id: 99
+    name: "Management"
+    purpose: "Out-of-band device management"
+
+# ---------------------------------------------------------------------------
+# SSID template — business function expressed through SSID names.
+# ---------------------------------------------------------------------------
+ssid_template:
+  - number: 0
+    name: "Northwind-Corp"
+    auth_mode: "802.1x-radius"
+    vlan_id: 10
+    purpose: "Associates and corporate staff"
+    visible: true
+  - number: 1
+    name: "Northwind-Guest"
+    auth_mode: "open-with-splash"
+    vlan_id: 50
+    purpose: "Customer internet, click-through captive portal"
+    visible: true
+  - number: 2
+    name: "Northwind-VoIP"
+    auth_mode: "psk"
+    vlan_id: 20
+    purpose: "WiFi handsets and paging"
+    visible: false
+  - number: 4
+    name: "Northwind-Scanning"
+    auth_mode: "psk"
+    vlan_id: 40
+    purpose: "Inventory handhelds and RFID sleds"
+    visible: false
+
+networks:
+  # -------------------------------------------------------------------------
+  # CORPORATE HQ — Seattle. IT, merchandising, finance, marketing, exec.
+  # -------------------------------------------------------------------------
+  - id: "L_646829496405521104"
+    name: "HQ - Seattle Corporate"
+    site: "HQ-Seattle"
+    site_type: "corporate"
+    product_types: ["appliance", "switch", "wireless", "camera", "sensor"]
+    timezone: "America/Los_Angeles"
+    address: "1201 3rd Ave, Seattle, WA 98101"
+    headcount: 240
+    criticality: "tier-1"
+    tags: ["region-pacific-northwest", "metro-seattle", "corporate-hq", "tier-1-critical"]
+    notes: "Corporate headquarters. Houses merchant IT, PCI DSS logging, and the SD-WAN hub."
+    devices:
+      - serial: "Q2QN-HQ01-MX01"
+        model: "MX450"
+        name: "HQ-Seattle-Firewall-Primary"
+        mac: "0c:05:0a:01:01:01"
+        address: "1201 3rd Ave, Seattle, WA — Rack A U40"
+        notes: "SD-WAN hub primary. Terminates store and DC Auto VPN tunnels. PCI DSS boundary."
+        tags: ["branch-gateway", "sdwan-hub", "ha-primary", "pci-scope", "rack-a", "tier-1-critical"]
+        wan_ip: "198.18.10.10"
+        lan_ip: "10.10.99.10"
+        gateway: "198.18.10.1"
+        public_ip: "198.18.10.10"
+        uplink_interface: "internet 1"
+      - serial: "Q2QN-HQ01-MX02"
+        model: "MX450"
+        name: "HQ-Seattle-Firewall-Secondary"
+        mac: "0c:05:0a:01:01:02"
+        address: "1201 3rd Ave, Seattle, WA — Rack B U40"
+        notes: "SD-WAN hub secondary. Warm standby, takes over on primary failure."
+        tags: ["branch-gateway", "sdwan-hub", "ha-secondary", "pci-scope", "rack-b", "tier-1-critical"]
+        wan_ip: "198.18.10.11"
+        lan_ip: "10.10.99.11"
+        gateway: "198.18.10.1"
+        public_ip: "198.18.10.11"
+        uplink_interface: "internet 1"
+      - serial: "Q2QN-HQ01-MS01"
+        model: "MS350-48LP"
+        name: "HQ-Seattle-Core-SW01"
+        mac: "0c:05:0a:01:02:01"
+        address: "1201 3rd Ave, Seattle, WA — Rack A U36"
+        notes: "Core distribution switch. Carries all VLANs including POS-PCI."
+        tags: ["core-switch", "pci-scope", "rack-a", "tier-1-critical"]
+        lan_ip: "10.10.99.20"
+      - serial: "Q2QN-HQ01-MS02"
+        model: "MS350-48LP"
+        name: "HQ-Seattle-Core-SW02"
+        mac: "0c:05:0a:01:02:02"
+        address: "1201 3rd Ave, Seattle, WA — Rack B U36"
+        notes: "Core distribution switch, second of pair. Stack peer to Core-SW01."
+        tags: ["core-switch", "pci-scope", "rack-b", "tier-1-critical"]
+        lan_ip: "10.10.99.21"
+      - serial: "Q2QN-HQ01-MS03"
+        model: "MS250-48LP"
+        name: "HQ-Seattle-Access-Floor1"
+        mac: "0c:05:0a:01:02:03"
+        address: "Floor 1 — merchandising, finance, lobby"
+        notes: "Floor 1 access. Serves associate workstations and lobby APs."
+        tags: ["access-switch", "hq-floor-1", "corporate"]
+        lan_ip: "10.10.99.22"
+      - serial: "Q2QN-HQ01-MS04"
+        model: "MS250-48LP"
+        name: "HQ-Seattle-Access-Floor2"
+        mac: "0c:05:0a:01:02:04"
+        address: "Floor 2 — IT, marketing, executive wing"
+        notes: "Floor 2 access. Serves IT ops, marketing, and the executive wing."
+        tags: ["access-switch", "hq-floor-2", "corporate", "exec-wing"]
+        lan_ip: "10.10.99.23"
+      - serial: "Q2QN-HQ01-MR01"
+        model: "MR46"
+        name: "HQ-Seattle-AP-Lobby"
+        mac: "0c:05:0a:01:03:01"
+        address: "Floor 1 lobby"
+        notes: "Lobby AP. Broadcasts Northwind-Guest for visitors and candidates."
+        tags: ["guest-wifi", "hq-floor-1", "ceiling-mount", "high-visibility"]
+        lan_ip: "10.10.50.31"
+      - serial: "Q2QN-HQ01-MR02"
+        model: "MR46"
+        name: "HQ-Seattle-AP-Floor1-Open"
+        mac: "0c:05:0a:01:03:02"
+        address: "Floor 1 open plan"
+        notes: "Open-plan coverage for merchandising and finance associates."
+        tags: ["associate-wifi", "hq-floor-1", "ceiling-mount"]
+        lan_ip: "10.10.10.32"
+      - serial: "Q2QN-HQ01-MR03"
+        model: "MR46"
+        name: "HQ-Seattle-AP-Floor2-Open"
+        mac: "0c:05:0a:01:03:03"
+        address: "Floor 2 open plan"
+        notes: "Open-plan coverage for IT ops and marketing."
+        tags: ["associate-wifi", "hq-floor-2", "ceiling-mount"]
+        lan_ip: "10.10.10.33"
+      - serial: "Q2QN-HQ01-MR04"
+        model: "MR56"
+        name: "HQ-Seattle-AP-Exec-Wing"
+        mac: "0c:05:0a:01:03:04"
+        address: "Floor 2 executive wing"
+        notes: "High-density AP for the executive wing and boardroom."
+        tags: ["associate-wifi", "hq-floor-2", "exec-wing", "ceiling-mount", "high-density"]
+        lan_ip: "10.10.10.34"
+      - serial: "Q2QN-HQ01-MV01"
+        model: "MV12"
+        name: "HQ-Seattle-Cam-MainLobby"
+        mac: "0c:05:0a:01:04:01"
+        address: "Floor 1 main lobby entrance"
+        notes: "Visitor badge-in verification and lobby occupancy analytics."
+        tags: ["loss-prevention", "hq-floor-1", "ceiling-mount", "people-counting"]
+        lan_ip: "10.10.60.41"
+      - serial: "Q2QN-HQ01-MV02"
+        model: "MV22"
+        name: "HQ-Seattle-Cam-ServerRoom"
+        mac: "0c:05:0a:01:04:02"
+        address: "Floor 1 server room, Rack A row"
+        notes: "Server room access monitoring. Retention 90 days for PCI DSS audit."
+        tags: ["loss-prevention", "pci-scope", "wall-mount", "server-room"]
+        lan_ip: "10.10.60.42"
+      - serial: "Q2QN-HQ01-MV03"
+        model: "MV72"
+        name: "HQ-Seattle-Cam-Parking"
+        mac: "0c:05:0a:01:04:03"
+        address: "Employee parking structure, level P1"
+        notes: "After-hours vehicle and pedestrian monitoring."
+        tags: ["loss-prevention", "outdoor", "wall-mount"]
+        lan_ip: "10.10.60.43"
+      - serial: "Q2QN-HQ01-MT01"
+        model: "MT20"
+        name: "HQ-Seattle-Sensor-ServerRoom"
+        mac: "0c:05:0a:01:05:01"
+        address: "Server room, cold aisle"
+        notes: "Server room temperature and humidity. Alerts above 27C."
+        tags: ["building-iot", "server-room", "environmental", "tier-1-critical"]
+        lan_ip: "10.10.70.51"
+      - serial: "Q2QN-HQ01-MT02"
+        model: "MT30"
+        name: "HQ-Seattle-Sensor-WaterLeak"
+        mac: "0c:05:0a:01:05:02"
+        address: "Server room, under raised floor"
+        notes: "Water leak detection beneath the raised floor near the CRAH units."
+        tags: ["building-iot", "server-room", "water-leak", "tier-1-critical"]
+        lan_ip: "10.10.70.52"
+
+    # L2 cabling. This is what feeds Splunk NI's topology graph.
+    links:
+      - source: {serial: "Q2QN-HQ01-MX01", port: "port 1"}
+        target: {serial: "Q2QN-HQ01-MS01", port: "49"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MX01", port: "port 2"}
+        target: {serial: "Q2QN-HQ01-MS02", port: "49"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MX02", port: "port 1"}
+        target: {serial: "Q2QN-HQ01-MS01", port: "50"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MX02", port: "port 2"}
+        target: {serial: "Q2QN-HQ01-MS02", port: "50"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MS01", port: "48"}
+        target: {serial: "Q2QN-HQ01-MS02", port: "48"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MS01", port: "1"}
+        target: {serial: "Q2QN-HQ01-MS03", port: "47"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MS02", port: "1"}
+        target: {serial: "Q2QN-HQ01-MS04", port: "47"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MS03", port: "2"}
+        target: {serial: "Q2QN-HQ01-MS04", port: "2"}
+        trunk: true
+      - source: {serial: "Q2QN-HQ01-MS03", port: "10"}
+        target: {serial: "Q2QN-HQ01-MR01", port: "eth0"}
+        vlan: 50
+      - source: {serial: "Q2QN-HQ01-MS03", port: "11"}
+        target: {serial: "Q2QN-HQ01-MR02", port: "eth0"}
+        vlan: 10
+      - source: {serial: "Q2QN-HQ01-MS04", port: "10"}
+        target: {serial: "Q2QN-HQ01-MR03", port: "eth0"}
+        vlan: 10
+      - source: {serial: "Q2QN-HQ01-MS04", port: "11"}
+        target: {serial: "Q2QN-HQ01-MR04", port: "eth0"}
+        vlan: 10
+      - source: {serial: "Q2QN-HQ01-MS03", port: "20"}
+        target: {serial: "Q2QN-HQ01-MV01", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-HQ01-MS03", port: "21"}
+        target: {serial: "Q2QN-HQ01-MV02", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-HQ01-MS04", port: "20"}
+        target: {serial: "Q2QN-HQ01-MV03", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-HQ01-MS03", port: "30"}
+        target: {serial: "Q2QN-HQ01-MT01", port: "port 1"}
+        vlan: 70
+      - source: {serial: "Q2QN-HQ01-MS03", port: "31"}
+        target: {serial: "Q2QN-HQ01-MT02", port: "port 1"}
+        vlan: 70
+
+    clients:
+      - mac: "3c:22:fb:01:10:01"
+        hostname: "HQ-FIN-WS-014"
+        description: "Finance analyst workstation"
+        ip: "10.10.10.114"
+        vlan: 10
+        client_type: "associate"
+        device_serial: "Q2QN-HQ01-MS03"
+        business_function: "Finance — AP and payroll systems"
+      - mac: "3c:22:fb:01:10:02"
+        hostname: "HQ-IT-WS-002"
+        description: "Network operations workstation"
+        ip: "10.10.10.202"
+        vlan: 10
+        client_type: "associate"
+        device_serial: "Q2QN-HQ01-MS04"
+        business_function: "IT ops — Meraki and Splunk administration"
+      - mac: "f0:18:98:01:20:01"
+        hostname: "HQ-BOARDROOM-TV"
+        description: "Executive boardroom display"
+        ip: "10.10.10.240"
+        vlan: 10
+        client_type: "av-system"
+        device_serial: "Q2QN-HQ01-MR04"
+        business_function: "Executive — boardroom conferencing"
+      - mac: "a4:83:e7:01:30:01"
+        hostname: "GUEST-VISITOR-7741"
+        description: "Vendor visitor laptop"
+        ip: "10.10.50.177"
+        vlan: 50
+        client_type: "guest"
+        device_serial: "Q2QN-HQ01-MR01"
+        business_function: "Guest — vendor and candidate internet"
+
+  # -------------------------------------------------------------------------
+  # DISTRIBUTION CENTER — Reno. Warehouse ops, cold storage, dock scheduling.
+  # -------------------------------------------------------------------------
+  - id: "L_646829496405521105"
+    name: "DC - Reno Distribution"
+    site: "DC-Reno"
+    site_type: "distribution"
+    product_types: ["appliance", "switch", "wireless", "camera", "sensor"]
+    timezone: "America/Los_Angeles"
+    address: "4400 Sandhill Rd, Reno, NV 89511"
+    headcount: 180
+    criticality: "tier-1"
+    tags: ["region-west", "metro-reno", "distribution-center", "warehouse-ops", "tier-1-critical"]
+    notes: "Regional distribution center. Fulfillment for the western store network. Cold storage on site."
+    devices:
+      - serial: "Q2QN-DC01-MX01"
+        model: "MX105"
+        name: "DC-Reno-Gateway"
+        mac: "0c:05:0a:02:01:01"
+        address: "DC Reno — main IDF, Rack A U42"
+        notes: "DC edge gateway. SD-WAN spoke to HQ. Carries warehouse scanner and camera traffic."
+        tags: ["branch-gateway", "sdwan-spoke", "warehouse-ops", "rack-a", "tier-1-critical"]
+        wan_ip: "198.18.20.10"
+        lan_ip: "10.20.99.10"
+        gateway: "198.18.20.1"
+        public_ip: "198.18.20.10"
+        uplink_interface: "internet 1"
+      - serial: "Q2QN-DC01-MS01"
+        model: "MS350-48FP"
+        name: "DC-Reno-Core-SW01"
+        mac: "0c:05:0a:02:02:01"
+        address: "DC Reno — main IDF, Rack A U38"
+        notes: "Distribution core. Aggregates warehouse, dock, and cold storage segments."
+        tags: ["core-switch", "warehouse-ops", "rack-a"]
+        lan_ip: "10.20.99.20"
+      - serial: "Q2QN-DC01-MS02"
+        model: "MS250-24"
+        name: "DC-Reno-Warehouse-SW01"
+        mac: "0c:05:0a:02:02:02"
+        address: "DC Reno — warehouse mezzanine IDF"
+        notes: "Warehouse floor access. Serves scanner APs, dock doors, and conveyor controllers."
+        tags: ["access-switch", "warehouse-ops", "inventory"]
+        lan_ip: "10.20.99.21"
+      - serial: "Q2QN-DC01-MR01"
+        model: "MR46"
+        name: "DC-Reno-AP-Warehouse-A"
+        mac: "0c:05:0a:02:03:01"
+        address: "Warehouse zone A, aisle 1-8"
+        notes: "Zone A coverage for handheld scanners and forklift terminals."
+        tags: ["inventory", "warehouse-ops", "ceiling-mount", "scanner-wifi"]
+        lan_ip: "10.20.40.31"
+      - serial: "Q2QN-DC01-MR02"
+        model: "MR46"
+        name: "DC-Reno-AP-Warehouse-B"
+        mac: "0c:05:0a:02:03:02"
+        address: "Warehouse zone B, aisle 9-16"
+        notes: "Zone B coverage for handheld scanners and forklift terminals."
+        tags: ["inventory", "warehouse-ops", "ceiling-mount", "scanner-wifi"]
+        lan_ip: "10.20.40.32"
+      - serial: "Q2QN-DC01-MR03"
+        model: "MR46"
+        name: "DC-Reno-AP-Dock"
+        mac: "0c:05:0a:02:03:03"
+        address: "Receiving dock, doors 1-12"
+        notes: "Dock coverage for receiving scanners and yard truck tablets."
+        tags: ["inventory", "warehouse-ops", "receiving-dock", "wall-mount"]
+        lan_ip: "10.20.40.33"
+      - serial: "Q2QN-DC01-MV01"
+        model: "MV72"
+        name: "DC-Reno-Cam-Dock01"
+        mac: "0c:05:0a:02:04:01"
+        address: "Receiving dock door 1-4"
+        notes: "Inbound trailer and pallet verification."
+        tags: ["loss-prevention", "receiving-dock", "ceiling-mount"]
+        lan_ip: "10.20.60.41"
+      - serial: "Q2QN-DC01-MV02"
+        model: "MV72"
+        name: "DC-Reno-Cam-Dock02"
+        mac: "0c:05:0a:02:04:02"
+        address: "Shipping dock door 5-8"
+        notes: "Outbound load verification and seal checks."
+        tags: ["loss-prevention", "shipping-dock", "ceiling-mount"]
+        lan_ip: "10.20.60.42"
+      - serial: "Q2QN-DC01-MV03"
+        model: "MV72"
+        name: "DC-Reno-Cam-Yard"
+        mac: "0c:05:0a:02:04:03"
+        address: "Trailer yard, north gate"
+        notes: "Yard tractor and trailer tracking, gate access monitoring."
+        tags: ["loss-prevention", "outdoor", "yard-ops", "wall-mount"]
+        lan_ip: "10.20.60.43"
+      - serial: "Q2QN-DC01-MV04"
+        model: "MV22"
+        name: "DC-Reno-Cam-ColdStore"
+        mac: "0c:05:0a:02:04:04"
+        address: "Cold storage vestibule"
+        notes: "Cold storage entry monitoring and PPE compliance checks."
+        tags: ["loss-prevention", "cold-chain", "wall-mount", "safety-compliance"]
+        lan_ip: "10.20.60.44"
+      - serial: "Q2QN-DC01-MT01"
+        model: "MT10"
+        name: "DC-Reno-Sensor-ColdStore"
+        mac: "0c:05:0a:02:05:01"
+        address: "Cold storage, rack 3 mid-level"
+        notes: "Cold chain temperature. Alerts above -15C — product safety and shrink."
+        tags: ["building-iot", "cold-chain", "temperature", "tier-1-critical"]
+        lan_ip: "10.20.70.51"
+      - serial: "Q2QN-DC01-MT02"
+        model: "MT20"
+        name: "DC-Reno-Sensor-Warehouse"
+        mac: "0c:05:0a:02:05:02"
+        address: "Warehouse floor, zone A column"
+        notes: "Ambient temperature and humidity for goods-in-spec storage."
+        tags: ["building-iot", "warehouse-ops", "environmental"]
+        lan_ip: "10.20.70.52"
+
+    links:
+      - source: {serial: "Q2QN-DC01-MX01", port: "port 1"}
+        target: {serial: "Q2QN-DC01-MS01", port: "49"}
+        trunk: true
+      - source: {serial: "Q2QN-DC01-MS01", port: "1"}
+        target: {serial: "Q2QN-DC01-MS02", port: "23"}
+        trunk: true
+      - source: {serial: "Q2QN-DC01-MS02", port: "1"}
+        target: {serial: "Q2QN-DC01-MR01", port: "eth0"}
+        vlan: 40
+      - source: {serial: "Q2QN-DC01-MS02", port: "2"}
+        target: {serial: "Q2QN-DC01-MR02", port: "eth0"}
+        vlan: 40
+      - source: {serial: "Q2QN-DC01-MS02", port: "3"}
+        target: {serial: "Q2QN-DC01-MR03", port: "eth0"}
+        vlan: 40
+      - source: {serial: "Q2QN-DC01-MS01", port: "10"}
+        target: {serial: "Q2QN-DC01-MV01", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-DC01-MS01", port: "11"}
+        target: {serial: "Q2QN-DC01-MV02", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-DC01-MS01", port: "12"}
+        target: {serial: "Q2QN-DC01-MV03", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-DC01-MS01", port: "13"}
+        target: {serial: "Q2QN-DC01-MV04", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-DC01-MS01", port: "20"}
+        target: {serial: "Q2QN-DC01-MT01", port: "port 1"}
+        vlan: 70
+      - source: {serial: "Q2QN-DC01-MS01", port: "21"}
+        target: {serial: "Q2QN-DC01-MT02", port: "port 1"}
+        vlan: 70
+
+    clients:
+      - mac: "5c:f9:dd:02:10:01"
+        hostname: "DC-SCANNER-ZONE-A-07"
+        description: "Zebra handheld barcode scanner"
+        ip: "10.20.40.107"
+        vlan: 40
+        client_type: "scanner"
+        device_serial: "Q2QN-DC01-MR01"
+        business_function: "Inventory — zone A pick and putaway"
+      - mac: "5c:f9:dd:02:10:02"
+        hostname: "DC-FORKLIFT-TERM-03"
+        description: "Forklift mounted terminal"
+        ip: "10.20.40.131"
+        vlan: 40
+        client_type: "scanner"
+        device_serial: "Q2QN-DC01-MR02"
+        business_function: "Warehouse ops — pallet movement"
+      - mac: "5c:f9:dd:02:10:03"
+        hostname: "DC-RECEIVING-TAB-01"
+        description: "Dock receiving tablet"
+        ip: "10.20.40.150"
+        vlan: 40
+        client_type: "scanner"
+        device_serial: "Q2QN-DC01-MR03"
+        business_function: "Receiving — inbound trailer check-in"
+      - mac: "b8:27:eb:02:20:01"
+        hostname: "DC-CONVEYOR-PLC-02"
+        description: "Conveyor line controller"
+        ip: "10.20.70.90"
+        vlan: 70
+        client_type: "iot"
+        device_serial: "Q2QN-DC01-MS02"
+        business_function: "Warehouse automation — sortation line 2"
+
+  # -------------------------------------------------------------------------
+  # STORE 0042 — New York flagship. High traffic, full service.
+  # -------------------------------------------------------------------------
+  - id: "L_646829496405521106"
+    name: "Store 0042 - New York Flagship"
+    site: "Store0042-NYC"
+    site_type: "retail-flagship"
+    product_types: ["appliance", "switch", "wireless", "camera", "sensor"]
+    timezone: "America/New_York"
+    address: "767 5th Ave, New York, NY 10153"
+    headcount: 65
+    criticality: "tier-2"
+    tags: ["region-northeast", "metro-nyc", "store-0042", "flagship", "pci-scope", "high-traffic"]
+    notes: "Flagship store. Highest foot traffic in the chain. 12 POS lanes, fitting rooms, stockroom."
+    devices:
+      - serial: "Q2QN-S042-MX01"
+        model: "MX85"
+        name: "Store0042-NYC-Gateway"
+        mac: "0c:05:0a:03:01:01"
+        address: "Store 0042 — back office closet"
+        notes: "Store edge gateway. SD-WAN spoke to HQ hub. PCI DSS boundary for POS lanes."
+        tags: ["branch-gateway", "sdwan-spoke", "pci-scope", "store-0042", "tier-2-critical"]
+        wan_ip: "198.18.42.10"
+        lan_ip: "10.42.99.10"
+        gateway: "198.18.42.1"
+        public_ip: "198.18.42.10"
+        uplink_interface: "internet 1"
+      - serial: "Q2QN-S042-MS01"
+        model: "MS250-24"
+        name: "Store0042-NYC-Switch"
+        mac: "0c:05:0a:03:02:01"
+        address: "Store 0042 — back office closet"
+        notes: "Store access switch. Serves POS lanes, registers, APs, and cameras."
+        tags: ["access-switch", "pci-scope", "store-0042", "pos-lane"]
+        lan_ip: "10.42.99.20"
+      - serial: "Q2QN-S042-MR01"
+        model: "MR46"
+        name: "Store0042-NYC-AP-SalesFloor"
+        mac: "0c:05:0a:03:03:01"
+        address: "Sales floor, center ceiling"
+        notes: "Sales floor coverage. Broadcasts Northwind-Guest and Northwind-Scanning."
+        tags: ["guest-wifi", "scanner-wifi", "store-0042", "ceiling-mount", "sales-floor"]
+        lan_ip: "10.42.50.31"
+      - serial: "Q2QN-S042-MR02"
+        model: "MR36"
+        name: "Store0042-NYC-AP-BackOffice"
+        mac: "0c:05:0a:03:03:02"
+        address: "Back office and stockroom"
+        notes: "Back office coverage for associate workstations and inventory handhelds."
+        tags: ["associate-wifi", "inventory", "store-0042", "ceiling-mount", "back-office"]
+        lan_ip: "10.42.10.32"
+      - serial: "Q2QN-S042-MV01"
+        model: "MV22"
+        name: "Store0042-NYC-Cam-Entrance"
+        mac: "0c:05:0a:03:04:01"
+        address: "Main entrance vestibule"
+        notes: "Foot traffic counting and entrance loss prevention."
+        tags: ["loss-prevention", "store-0042", "ceiling-mount", "people-counting", "sales-floor"]
+        lan_ip: "10.42.60.41"
+      - serial: "Q2QN-S042-MV02"
+        model: "MV22"
+        name: "Store0042-NYC-Cam-POSLanes"
+        mac: "0c:05:0a:03:04:02"
+        address: "POS lane bank, registers 1-12"
+        notes: "Register transaction monitoring. Retention 90 days for PCI DSS audit."
+        tags: ["loss-prevention", "pci-scope", "store-0042", "ceiling-mount", "pos-lane"]
+        lan_ip: "10.42.60.42"
+      - serial: "Q2QN-S042-MV03"
+        model: "MV12"
+        name: "Store0042-NYC-Cam-Stockroom"
+        mac: "0c:05:0a:03:04:03"
+        address: "Stockroom, receiving door"
+        notes: "Shrink investigation and receiving verification."
+        tags: ["loss-prevention", "store-0042", "wall-mount", "stockroom", "inventory"]
+        lan_ip: "10.42.60.43"
+      - serial: "Q2QN-S042-MT01"
+        model: "MT20"
+        name: "Store0042-NYC-Sensor-Closet"
+        mac: "0c:05:0a:03:05:01"
+        address: "Back office network closet"
+        notes: "Closet temperature. Alerts above 32C — equipment protection."
+        tags: ["building-iot", "store-0042", "environmental", "back-office"]
+        lan_ip: "10.42.70.51"
+
+    links:
+      - source: {serial: "Q2QN-S042-MX01", port: "port 1"}
+        target: {serial: "Q2QN-S042-MS01", port: "23"}
+        trunk: true
+      - source: {serial: "Q2QN-S042-MS01", port: "1"}
+        target: {serial: "Q2QN-S042-MR01", port: "eth0"}
+        vlan: 50
+      - source: {serial: "Q2QN-S042-MS01", port: "2"}
+        target: {serial: "Q2QN-S042-MR02", port: "eth0"}
+        vlan: 10
+      - source: {serial: "Q2QN-S042-MS01", port: "10"}
+        target: {serial: "Q2QN-S042-MV01", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-S042-MS01", port: "11"}
+        target: {serial: "Q2QN-S042-MV02", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-S042-MS01", port: "12"}
+        target: {serial: "Q2QN-S042-MV03", port: "eth0"}
+        vlan: 60
+      - source: {serial: "Q2QN-S042-MS01", port: "16"}
+        target: {serial: "Q2QN-S042-MT01", port: "port 1"}
+        vlan: 70
+
+    clients:
+      - mac: "d8:bb:c1:03:30:01"
+        hostname: "POS-LANE-01"
+        description: "Register 1 payment terminal"
+        ip: "10.42.30.11"
+        vlan: 30
+        client_type: "pos"
+        device_serial: "Q2QN-S042-MS01"
+        business_function: "POS — card-present transactions, PCI DSS scope"
+      - mac: "d8:bb:c1:03:30:02"
+        hostname: "POS-LANE-02"
+        description: "Register 2 payment terminal"
+        ip: "10.42.30.12"
+        vlan: 30
+        client_type: "pos"
+        device_serial: "Q2QN-S042-MS01"
+        business_function: "POS — card-present transactions, PCI DSS scope"
+      - mac: "d8:bb:c1:03:30:03"
+        hostname: "POS-LANE-03"
+        description: "Register 3 payment terminal"
+        ip: "10.42.30.13"
+        vlan: 30
+        client_type: "pos"
+        device_serial: "Q2QN-S042-MS01"
+        business_function: "POS — card-present transactions, PCI DSS scope"
+      - mac: "5c:f9:dd:03:40:01"
+        hostname: "STORE042-SCAN-04"
+        description: "Sales floor inventory handheld"
+        ip: "10.42.40.104"
+        vlan: 40
+        client_type: "scanner"
+        device_serial: "Q2QN-S042-MR01"
+        business_function: "Inventory — cycle counts and price audits"
+      - mac: "a4:5e:60:03:50:01"
+        hostname: "GUEST-CUSTOMER-2291"
+        description: "Customer smartphone"
+        ip: "10.42.50.191"
+        vlan: 50
+        client_type: "guest"
+        device_serial: "Q2QN-S042-MR01"
+        business_function: "Guest — customer internet, captive portal"
+      - mac: "a4:5e:60:03:50:02"
+        hostname: "GUEST-CUSTOMER-3318"
+        description: "Customer smartphone"
+        ip: "10.42.50.192"
+        vlan: 50
+        client_type: "guest"
+        device_serial: "Q2QN-S042-MR01"
+        business_function: "Guest — customer internet, captive portal"
+      - mac: "3c:22:fb:03:60:01"
+        hostname: "STORE042-MGR-WS"
+        description: "Store manager workstation"
+        ip: "10.42.10.101"
+        vlan: 10
+        client_type: "associate"
+        device_serial: "Q2QN-S042-MR02"
+        business_function: "Store management — scheduling and payroll"
+      - mac: "00:1a:a1:03:70:01"
+        hostname: "STORE042-HVAC-CTRL"
+        description: "Rooftop HVAC controller"
+        ip: "10.42.70.80"
+        vlan: 70
+        client_type: "iot"
+        device_serial: "Q2QN-S042-MS01"
+        business_function: "Facilities — HVAC and energy management"
+
+# ---------------------------------------------------------------------------
+# Stores 0117, 0203, 0288, 0351, 0429 share one structural template so the
+# demo shows a repeatable site pattern — which is how retail chains deploy.
+# The loader expands store_template x stores into full networks, links, clients.
+# ---------------------------------------------------------------------------
+store_template:
+  devices:
+    - role: gateway
+      name_suffix: "Gateway"
+      model: "MX68"
+      notes: "Store edge gateway. SD-WAN spoke to HQ hub. PCI DSS boundary for POS lanes."
+      tags: ["branch-gateway", "sdwan-spoke", "pci-scope"]
+      ip_suffix: "99.10"
+    - role: switch
+      name_suffix: "Switch"
+      model: "MS250-24"
+      notes: "Store access switch. Serves POS lanes, registers, APs, and cameras."
+      tags: ["access-switch", "pci-scope", "pos-lane"]
+      ip_suffix: "99.20"
+    - role: ap_sales
+      name_suffix: "AP-SalesFloor"
+      model: "MR36"
+      notes: "Sales floor coverage. Broadcasts Northwind-Guest and Northwind-Scanning."
+      tags: ["guest-wifi", "scanner-wifi", "ceiling-mount", "sales-floor"]
+      ip_suffix: "50.31"
+    - role: ap_back
+      name_suffix: "AP-BackOffice"
+      model: "MR26"
+      notes: "Back office coverage for associate workstations and inventory handhelds."
+      tags: ["associate-wifi", "inventory", "ceiling-mount", "back-office"]
+      ip_suffix: "10.32"
+    - role: cam_entrance
+      name_suffix: "Cam-Entrance"
+      model: "MV22"
+      notes: "Foot traffic counting and entrance loss prevention."
+      tags: ["loss-prevention", "ceiling-mount", "people-counting", "sales-floor"]
+      ip_suffix: "60.41"
+    - role: cam_pos
+      name_suffix: "Cam-POSLanes"
+      model: "MV22"
+      notes: "Register transaction monitoring. Retention 90 days for PCI DSS audit."
+      tags: ["loss-prevention", "pci-scope", "ceiling-mount", "pos-lane"]
+      ip_suffix: "60.42"
+    - role: cam_stock
+      name_suffix: "Cam-Stockroom"
+      model: "MV12"
+      notes: "Shrink investigation and receiving verification."
+      tags: ["loss-prevention", "wall-mount", "stockroom", "inventory"]
+      ip_suffix: "60.43"
+    - role: sensor
+      name_suffix: "Sensor-Closet"
+      model: "MT20"
+      notes: "Closet temperature. Alerts above 32C — equipment protection."
+      tags: ["building-iot", "environmental", "back-office"]
+      ip_suffix: "70.51"
+
+  # Port assignments for the template links, keyed by target role.
+  link_ports:
+    gateway_to_switch: {source_port: "port 1", target_port: "23", trunk: true}
+    switch_to_ap_sales: {source_port: "1", target_port: "eth0", vlan: 50}
+    switch_to_ap_back: {source_port: "2", target_port: "eth0", vlan: 10}
+    switch_to_cam_entrance: {source_port: "10", target_port: "eth0", vlan: 60}
+    switch_to_cam_pos: {source_port: "11", target_port: "eth0", vlan: 60}
+    switch_to_cam_stock: {source_port: "12", target_port: "eth0", vlan: 60}
+    switch_to_sensor: {source_port: "16", target_port: "port 1", vlan: 70}
+
+  clients:
+    - role: pos_1
+      hostname_suffix: "POS-LANE-01"
+      description: "Register 1 payment terminal"
+      ip_suffix: "30.11"
+      vlan: 30
+      client_type: "pos"
+      attach_to: switch
+      business_function: "POS — card-present transactions, PCI DSS scope"
+    - role: pos_2
+      hostname_suffix: "POS-LANE-02"
+      description: "Register 2 payment terminal"
+      ip_suffix: "30.12"
+      vlan: 30
+      client_type: "pos"
+      attach_to: switch
+      business_function: "POS — card-present transactions, PCI DSS scope"
+    - role: scanner_1
+      hostname_suffix: "SCAN-01"
+      description: "Sales floor inventory handheld"
+      ip_suffix: "40.101"
+      vlan: 40
+      client_type: "scanner"
+      attach_to: ap_sales
+      business_function: "Inventory — cycle counts and price audits"
+    - role: guest_1
+      hostname_suffix: "GUEST-CUSTOMER-01"
+      description: "Customer smartphone"
+      ip_suffix: "50.101"
+      vlan: 50
+      client_type: "guest"
+      attach_to: ap_sales
+      business_function: "Guest — customer internet, captive portal"
+    - role: guest_2
+      hostname_suffix: "GUEST-CUSTOMER-02"
+      description: "Customer smartphone"
+      ip_suffix: "50.102"
+      vlan: 50
+      client_type: "guest"
+      attach_to: ap_sales
+      business_function: "Guest — customer internet, captive portal"
+    - role: associate_1
+      hostname_suffix: "MGR-WS"
+      description: "Store manager workstation"
+      ip_suffix: "10.101"
+      vlan: 10
+      client_type: "associate"
+      attach_to: ap_back
+      business_function: "Store management — scheduling and payroll"
+    - role: iot_1
+      hostname_suffix: "HVAC-CTRL"
+      description: "Rooftop HVAC controller"
+      ip_suffix: "70.80"
+      vlan: 70
+      client_type: "iot"
+      attach_to: switch
+      business_function: "Facilities — HVAC and energy management"
+
+stores:
+  - store_id: "0117"
+    site: "Store0117-LAX"
+    name: "Store 0117 - Los Angeles"
+    metro: "metro-lax"
+    region: "region-west"
+    timezone: "America/Los_Angeles"
+    address: "10250 Santa Monica Blvd, Los Angeles, CA 90067"
+    headcount: 42
+    criticality: "tier-2"
+    store_type: "mall-anchor"
+    extra_tags: ["mall-anchor", "high-traffic"]
+    notes: "Century City mall anchor store. 8 POS lanes, strong guest WiFi demand."
+    ip_octet: 43
+    wan_octet: 43
+    guest_count: 3
+    gateway_model: "MX85"
+
+  - store_id: "0203"
+    site: "Store0203-CHI"
+    name: "Store 0203 - Chicago"
+    metro: "metro-chicago"
+    region: "region-midwest"
+    timezone: "America/Chicago"
+    address: "835 N Michigan Ave, Chicago, IL 60611"
+    headcount: 38
+    criticality: "tier-2"
+    store_type: "urban-street"
+    extra_tags: ["urban-street", "magnificent-mile"]
+    notes: "Magnificent Mile street-front store. 8 POS lanes, heavy tourist foot traffic."
+    ip_octet: 44
+    wan_octet: 44
+    guest_count: 4
+    gateway_model: "MX85"
+
+  - store_id: "0288"
+    site: "Store0288-DAL"
+    name: "Store 0288 - Dallas"
+    metro: "metro-dallas"
+    region: "region-south"
+    timezone: "America/Chicago"
+    address: "2201 N Stemmons Fwy, Dallas, TX 75207"
+    headcount: 28
+    criticality: "tier-3"
+    store_type: "standard"
+    extra_tags: ["standard-format"]
+    notes: "Standard format store at Market Ave Dallas. 6 POS lanes."
+    ip_octet: 45
+    wan_octet: 45
+    guest_count: 1
+    gateway_model: "MX68"
+
+  - store_id: "0351"
+    site: "Store0351-BOS"
+    name: "Store 0351 - Boston"
+    metro: "metro-boston"
+    region: "region-northeast"
+    timezone: "America/New_York"
+    address: "800 Boylston St, Boston, MA 02199"
+    headcount: 31
+    criticality: "tier-3"
+    store_type: "standard"
+    extra_tags: ["standard-format", "prudential-center"]
+    notes: "Prudential Center store. 6 POS lanes, urban mall format."
+    ip_octet: 46
+    wan_octet: 46
+    guest_count: 1
+    gateway_model: "MX68"
+
+  - store_id: "0429"
+    site: "Store0429-DEN"
+    name: "Store 0429 - Denver"
+    metro: "metro-denver"
+    region: "region-mountain"
+    timezone: "America/Denver"
+    address: "1600 California St, Denver, CO 80202"
+    headcount: 24
+    criticality: "tier-3"
+    store_type: "standard"
+    extra_tags: ["standard-format", "new-site"]
+    notes: "Newly opened downtown Denver store. 6 POS lanes, still ramping."
+    ip_octet: 47
+    wan_octet: 47
+    guest_count: 1
+    gateway_model: "MX68"
+
+# ---------------------------------------------------------------------------
+# SD-WAN. Hub-and-spoke: HQ is the hub, DC and stores are spokes.
+# ---------------------------------------------------------------------------
+vpn:
+  mode: "hub-and-spoke"
+  hub_serials: ["Q2QN-HQ01-MX01", "Q2QN-HQ01-MX02"]
+  # Spokes are derived automatically from every MX that is not a hub.

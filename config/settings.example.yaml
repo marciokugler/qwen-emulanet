@@ -1,0 +1,36 @@
+server:
+  host: "0.0.0.0"
+  port: 5000
+  api_key: "6789123456789012345678901234567890123456"
+  base_url: "http://localhost:5000"
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+
+splunk_hec:
+  enabled: false
+  url: "https://your-splunk:8088/services/collector"
+  token: "your-hec-token-here"
+  index: "main"
+  verify_ssl: false
+
+webhooks:
+  enabled: true
+  interval_seconds: 30
+  shared_secret: "meraki-webhook-secret-12345"
+
+data_generation:
+  device_status_interval: 60
+  client_stats_interval: 120
+  vpn_stats_interval: 180
+  sensor_readings_interval: 300
+  events_interval: 45
+
+scenarios:
+  enabled: true
+  config_file: "config/scenarios.yaml"
+
+logging:
+  level: "INFO"
+  file: "logs/emulator.log"
