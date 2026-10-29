@@ -1,11 +1,31 @@
 """Verify topology generators match the documented Meraki API schemas."""
 
+import re
+
 from src.topology.loader import load_topology
 from src.data import topology as topo
 
 s = load_topology("config/topology.yaml")
 print(f"Loaded: {len(s.networks)} networks, {len(s.devices)} devices, "
       f"{len(s.links)} links, {len(s.clients)} clients, {len(s.vpn_peers)} VPN peers\n")
+
+# --- MAC addresses must be valid and unique ---
+# Splunk NI parents interface vertices to devices with
+# lower(replace(trim(mac),"-",":")), so a malformed or duplicated MAC silently
+# breaks the device-to-interface join rather than raising an error.
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+bad_macs = [(d.serial, d.mac) for d in s.get_all_devices()
+            if not MAC_RE.fullmatch(d.mac.lower())]
+assert not bad_macs, f"malformed MAC addresses: {bad_macs[:5]}"
+mac_counts: dict[str, int] = {}
+for d in s.get_all_devices():
+    mac_counts[d.mac.lower()] = mac_counts.get(d.mac.lower(), 0) + 1
+dupes = {m: c for m, c in mac_counts.items() if c > 1}
+assert not dupes, f"duplicate MAC addresses: {dupes}"
+bad_client_macs = [c.mac for c in s.clients.values() if not MAC_RE.fullmatch(c.mac.lower())]
+assert not bad_client_macs, f"malformed client MACs: {bad_client_macs[:5]}"
+print(f"[0] MAC addresses: {len(s.devices)} device + {len(s.clients)} client, "
+      f"all valid six-octet and unique")
 
 # --- nodes/discovered (feeds Splunk NI graph nodes) ---
 n = topo.generate_topology_nodes_discovered(s)

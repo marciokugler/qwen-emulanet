@@ -16,6 +16,10 @@ logs/
 # Generated from live API data by build_preview.py — regenerable, and stale by design
 web/topology-preview.html
 
+# Extracted third-party Splunk app source, used only for local inspection.
+# Cisco/Splunk code must not be redistributed from this repo.
+.ni-inspect/
+
 # OS / editor
 .DS_Store
 Thumbs.db

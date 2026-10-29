@@ -58,6 +58,12 @@ class SwitchPort:
     stp_guard: str = "disabled"
     link_negotiation: str = "Auto negotiate"
     port_schedule_id: str = ""
+    # Splunk NI explicitly ignores "Port disconnected" and "Port disabled" when
+    # counting actionable errors, and its critical rule also requires
+    # isUplink=true. So a fault on an access port only surfaces in NI if the
+    # port carries a genuine error or warning string from these lists.
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

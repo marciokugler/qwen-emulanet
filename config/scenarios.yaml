@@ -11,17 +11,27 @@
 scenarios:
   # =========================================================================
   # REVENUE IMPACT — POS and store connectivity
+  #
+  # Both scenarios below are written so Splunk NI actually grades them as a
+  # fault. NI's interface_status binding grades "critical" only when either
+  #   (a) enabled=true AND status="disconnected" AND isUplink=true, or
+  #   (b) actionable_error_count > 0
+  # and it deliberately ignores the strings "Port disconnected" / "Port
+  # disabled". A plain down access port therefore reads as HEALTHY in NI, so
+  # each scenario targets an uplink or injects a genuine error string.
   # =========================================================================
-  - name: "pos_lane_outage_flagship"
-    description: "Store 0042 NYC — POS lane switch port flaps, register 3 offline during trading hours"
+  - name: "store_uplink_failure_flagship"
+    description: "Store 0042 NYC — switch uplink to the store gateway drops during trading hours"
     trigger: "scheduled"
     schedule: "0 */6 * * *"
     duration_minutes: 12
-    business_impact: "Card-present transactions halted on register 3. Direct revenue loss."
+    business_impact: "Whole store loses wired connectivity: all 12 POS lanes cannot reach payment authorization."
     actions:
+      # Port 23 is the trunk uplink from Store0042-NYC-Switch to the gateway,
+      # so isUplink=true and NI grades the disconnection "critical".
       - type: "port_state_change"
         device: "Q2QN-S042-MS01"
-        port: "11"
+        port: "23"
         state: "down"
         duration_seconds: 90
       - type: "generate_event"
@@ -29,13 +39,38 @@ scenarios:
         device: "Q2QN-S042-MS01"
         eventType: "port_status_change"
         severity: "critical"
-        description: "Port 11 (POS lane 3 uplink) went down on Store0042-NYC-Switch"
+        description: "Uplink port 23 to Store0042-NYC-Gateway went down — store wired segment isolated"
       - type: "generate_event"
         networkId: "L_646829496405521106"
         device: "Q2QN-S042-MX01"
         eventType: "client_disconnected"
-        severity: "high"
-        description: "POS-LANE-03 lost connectivity — PCI cardholder data environment affected"
+        severity: "critical"
+        description: "All POS lanes lost connectivity — PCI cardholder data environment affected"
+
+  - name: "pos_camera_port_crc_errors"
+    description: "Store 0042 NYC — POS lane camera port accumulates CRC errors, video degrading"
+    trigger: "random"
+    probability: 0.12
+    interval_minutes: 90
+    duration_minutes: 25
+    business_impact: "Loss-prevention video for the register bank is unreliable — PCI DSS audit evidence at risk."
+    actions:
+      # Port 11 feeds Cam-POSLanes. It is an access port, so a link-down alone
+      # would read as healthy in NI; CRC errors make it actionable instead.
+      - type: "port_errors"
+        device: "Q2QN-S042-MS01"
+        port: "11"
+        errors:
+          - "Very high proportion of CRC errors"
+        warnings:
+          - "High proportion of CRC errors"
+        duration_seconds: 300
+      - type: "generate_event"
+        networkId: "L_646829496405521106"
+        device: "Q2QN-S042-MS01"
+        eventType: "port_errors_detected"
+        severity: "critical"
+        description: "Port 11 (Store0042-NYC-Cam-POSLanes) reporting very high CRC error proportion"
 
   - name: "store_gateway_wan_degradation"
     description: "Store 0203 Chicago — primary WAN degrades, high latency and packet loss"

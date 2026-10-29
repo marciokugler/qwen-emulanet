@@ -6,12 +6,17 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
+import zlib
 
 from src.topology.models import TopologyState
 from src.data import generators as gen
 from src.data import topology as topo
 
 logger = logging.getLogger(__name__)
+
+# Valid Meraki radio channels, used to derive a stable per-AP assignment.
+_CHANNELS_24 = [1, 6, 11]
+_CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161]
 
 
 def create_api_server(state: TopologyState, api_key: str) -> FastAPI:
@@ -195,10 +200,16 @@ def create_api_server(state: TopologyState, api_key: str) -> FastAPI:
             "v2cCommunity": "public",
         }
 
-    @app.get("/api/v1/organizations/{org_id}/openapi/spec")
+    @app.get("/api/v1/organizations/{org_id}/openapiSpec")
     async def get_openapi_spec(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key")):
+        """Organization OpenAPI document.
+
+        The Splunk Meraki add-on fetches this to discover endpoints that are not
+        in its bundled SDK catalog — which is how the two topology operations
+        become selectable as Custom API inputs.
+        """
         await verify_api_key(key)
-        return {"openapi": "3.0.0", "info": {"title": "Meraki API", "version": "1.53.0"}}
+        return topo.generate_openapi_spec(state)
 
     @app.get("/api/v1/organizations/{org_id}/firmwareUpgrades")
     async def get_firmware_upgrades(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
@@ -358,23 +369,84 @@ def create_api_server(state: TopologyState, api_key: str) -> FastAPI:
     async def get_org_switch_ports(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
                                     perPage: int = 1000, configurationUpdatedAfter: str = None,
                                     networkIds: list[str] = None, serials: list[str] = None):
-        await verify_api_key(key)
-        results = []
-        for device in state.get_devices_by_model_prefix("MS"):
-            ports = gen.generate_switch_ports_config(state, device.serial)
-            for port in ports:
-                port["serial"] = device.serial
-                port["networkId"] = device.network_id
-                results.append(port)
-        return results
+        """Bare array, one record per switch with nested ports[].
 
-    @app.get("/api/v1/organizations/{org_id}/devices/uplinks/lossAndLatency")
+        NI parents interface vertices to devices via the per-switch `mac` and to
+        sites via `network.id`, so the per-switch grouping is required.
+        """
+        await verify_api_key(key)
+        records = topo.generate_switch_ports_by_switch(state)
+        if networkIds:
+            records = [r for r in records if r["network"]["id"] in networkIds]
+        if serials:
+            records = [r for r in records if r["serial"] in serials]
+        return records[:perPage]
+
+    @app.get("/api/v1/organizations/{org_id}/switch/ports/statuses/bySwitch")
+    async def get_org_switch_port_statuses(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
+                                            perPage: int = 1000, startingAfter: str = None,
+                                            endingBefore: str = None, networkIds: list[str] = None,
+                                            serials: list[str] = None):
+        """Feeds NI's meraki.interface_status capability."""
+        await verify_api_key(key)
+        result = topo.generate_switch_port_statuses_by_switch(state, per_page=perPage)
+        if networkIds:
+            result["items"] = [r for r in result["items"] if r["network"]["id"] in networkIds]
+        if serials:
+            result["items"] = [r for r in result["items"] if r["serial"] in serials]
+        return result
+
+    @app.get("/api/v1/organizations/{org_id}/switch/ports/usage/history/byDevice/byInterval")
+    async def get_org_switch_port_usage_history(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
+                                                 t0: str = None, t1: str = None, timespan: int = 1200,
+                                                 networkIds: list[str] = None, serials: list[str] = None,
+                                                 portIds: list[str] = None, perPage: int = 1000,
+                                                 startingAfter: str = None, endingBefore: str = None):
+        """Feeds NI's meraki.interface_throughput and meraki.interface_power."""
+        await verify_api_key(key)
+        result = topo.generate_switch_ports_usage_history(state, timespan=timespan, per_page=perPage)
+        if networkIds:
+            result["items"] = [r for r in result["items"] if r["network"]["id"] in networkIds]
+        if serials:
+            result["items"] = [r for r in result["items"] if r["serial"] in serials]
+        return result
+
+    @app.get("/api/v1/organizations/{org_id}/devices/uplinks/addresses/byDevice")
+    async def get_org_uplink_addresses(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
+                                        perPage: int = 1000, startingAfter: str = None,
+                                        endingBefore: str = None, networkIds: list[str] = None,
+                                        serials: list[str] = None, productTypes: list[str] = None):
+        """Feeds NI's uplink interface vertex adapter (parented by mac)."""
+        await verify_api_key(key)
+        records = topo.generate_uplink_addresses_by_device(state)
+        if networkIds:
+            records = [r for r in records if r["network"]["id"] in networkIds]
+        if serials:
+            records = [r for r in records if r["serial"] in serials]
+        if productTypes:
+            records = [r for r in records if r["productType"] in productTypes]
+        return records[:perPage]
+
+    @app.get("/api/v1/organizations/{org_id}/devices/uplinksLossAndLatency")
     async def get_org_uplink_loss_latency(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
                                            t0: str = None, t1: str = None, timespan: int = 3600,
                                            networkIds: list[str] = None, serials: list[str] = None,
                                            uplinks: list[str] = None, ip: str = None):
+        """Feeds NI's meraki.interface_uplink_quality capability.
+
+        Path is /devices/uplinksLossAndLatency — no slash before "Loss".
+        """
         await verify_api_key(key)
-        return gen.generate_uplink_loss_latency(state)
+        records = topo.generate_uplinks_loss_and_latency(state, timespan=timespan)
+        if networkIds:
+            records = [r for r in records if r["networkId"] in networkIds]
+        if serials:
+            records = [r for r in records if r["serial"] in serials]
+        if uplinks:
+            records = [r for r in records if r["uplink"] in uplinks]
+        if ip:
+            records = [r for r in records if r["ip"] == ip]
+        return records
 
     @app.get("/api/v1/organizations/{org_id}/wireless/devices/wireless/statuses")
     async def get_wireless_statuses(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),
@@ -383,18 +455,31 @@ def create_api_server(state: TopologyState, api_key: str) -> FastAPI:
         await verify_api_key(key)
         results = []
         for device in state.get_devices_by_model_prefix("MR"):
+            if networkIds and device.network_id not in networkIds:
+                continue
+            if serials and device.serial not in serials:
+                continue
+            # Channel and power are stable per AP, derived from the serial.
+            # A real radio holds its assignment until auto-RF changes it; it
+            # does not re-roll on every API poll.
+            seed = zlib.crc32(device.serial.encode())
             results.append({
                 "serial": device.serial,
                 "networkId": device.network_id,
-                "status": device.status.value,
+                "status": gen.meraki_availability_status(device),
                 "lastReportedAt": gen._ts_iso(device.last_seen),
                 "channels": {
-                    "2.4ghz": {"channel": random.choice([1, 6, 11]), "power": random.randint(5, 20)},
-                    "5ghz": {"channel": random.choice([36, 40, 44, 48, 149, 153, 157, 161]),
-                             "power": random.randint(5, 23)},
+                    "2.4ghz": {
+                        "channel": _CHANNELS_24[seed % len(_CHANNELS_24)],
+                        "power": 5 + seed % 16,
+                    },
+                    "5ghz": {
+                        "channel": _CHANNELS_5[(seed >> 3) % len(_CHANNELS_5)],
+                        "power": 5 + (seed >> 5) % 19,
+                    },
                 },
             })
-        return results
+        return results[:perPage]
 
     @app.get("/api/v1/organizations/{org_id}/wireless/devices/ethernet/statuses")
     async def get_wireless_ethernet_statuses(org_id: str, key: str = Header(None, alias="X-Cisco-Meraki-API-Key"),

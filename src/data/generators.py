@@ -43,17 +43,25 @@ def generate_organizations_list(state: TopologyState) -> list[dict]:
 
 
 def generate_networks_response(state: TopologyState) -> list[dict]:
+    """GET /organizations/{orgId}/networks — bare array.
+
+    NI derives site vertices from these records, so id/name/tags all matter.
+    """
+    org_id = state.organization.get("id", "2947")
     result = []
     for net in state.networks.values():
+        # Meraki enrollment strings look like "enroll-x2-<hex>"; derive one
+        # deterministically from the network id so repeated polls agree.
+        token = hashlib.md5(net.id.encode()).hexdigest()[:6]
         result.append({
             "id": net.id,
-            "organizationId": state.organization.get("id", "ORG_001"),
+            "organizationId": org_id,
             "name": net.name,
             "productTypes": net.product_types,
             "tags": net.tags,
-            "enrollmentString": net.enrollment_string or f"enroll-{net.id}",
+            "enrollmentString": f"enroll-x2-{token}",
             "timeZone": net.timezone,
-            "url": f"https://n1.meraki.com/{net.id}/manage",
+            "url": f"https://n43.meraki.com/{net.id}/manage",
             "isBoundToConfigTemplate": False,
         })
     return result
@@ -120,43 +128,42 @@ def generate_devices_response(state: TopologyState,
     return [generate_device_response(d, state) for d in devices[:per_page]]
 
 
-def generate_device_availability(state: TopologyState) -> dict:
-    items = []
-    for device in state.get_all_devices():
-        ts_now = time.time()
-        item = {
-            "serial": device.serial,
-            "networkId": device.network_id,
+# Meraki's documented availability enum is alerting|dormant|offline|online —
+# there is no "degraded". NI maps online->ok, offline->critical,
+# alerting/dormant->degraded, and anything else to "unknown", so emitting our
+# internal "degraded" verbatim would silently score as unknown.
+_MERAKI_AVAILABILITY = {
+    DeviceStatus.ONLINE: "online",
+    DeviceStatus.OFFLINE: "offline",
+    DeviceStatus.DEGRADED: "alerting",
+}
+
+
+def meraki_availability_status(device: Device) -> str:
+    """Map internal device state onto Meraki's documented status enum."""
+    return _MERAKI_AVAILABILITY.get(device.status, "online")
+
+
+def generate_device_availability(state: TopologyState) -> list[dict]:
+    """GET /organizations/{orgId}/devices/availabilities — bare array.
+
+    The documented response carries exactly seven fields: mac, name,
+    network.id, productType, serial, status, tags. Feeds NI's
+    meraki.device_availability binding, which creates vertex:device keyed on
+    serial — so this endpoint is what puts devices on NI's inventory at all.
+    """
+    return [
+        {
+            "mac": device.mac,
+            "name": device.name,
+            "network": {"id": device.network_id},
             "productType": device.device_type,
-            "status": device.status.value,
-            "lastReportedAt": _ts_iso(device.last_seen),
-            "publicIp": device.public_ip or "0.0.0.0",
-            "components": {},
+            "serial": device.serial,
+            "status": meraki_availability_status(device),
+            "tags": device.tags,
         }
-
-        if device.family in (DeviceFamily.MX, DeviceFamily.MS, DeviceFamily.MR):
-            wan_status = "Active"
-            if device.status == DeviceStatus.OFFLINE:
-                wan_status = "Failed"
-            elif device.status == DeviceStatus.DEGRADED:
-                wan_status = "Failing"
-
-            if device.uplink and device.uplink.wan_ip:
-                item["components"]["wan1"] = {
-                    "status": wan_status,
-                    "ip": device.uplink.wan_ip,
-                    "gateway": device.uplink.gateway or "0.0.0.0",
-                }
-            else:
-                item["components"]["wan1"] = {
-                    "status": wan_status,
-                    "ip": device.uplink.ip if device.uplink else "0.0.0.0",
-                    "gateway": "0.0.0.0",
-                }
-
-        items.append(item)
-
-    return {"items": items}
+        for device in state.get_all_devices()
+    ]
 
 
 def generate_network_events(state: TopologyState, network_id: str,

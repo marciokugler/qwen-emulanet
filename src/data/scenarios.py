@@ -95,6 +95,8 @@ class ScenarioEngine:
                 device.uplink.loss_percent = random.uniform(0.0, 1.0)
             for port in device.ports:
                 port.is_up = bool(port.connected_serial)
+                port.errors = []
+                port.warnings = []
 
         # Links and ports must come back too, otherwise a stopped mid-flap
         # scenario leaves the topology graph showing a phantom outage.
@@ -190,6 +192,8 @@ class ScenarioEngine:
                 self._apply_generate_event(action)
             elif action_type == "port_state_change":
                 await self._apply_port_state_change(action)
+            elif action_type == "port_errors":
+                await self._apply_port_errors(action)
             elif action_type == "security_event":
                 self._apply_security_event(action)
             elif action_type == "sensor_reading":
@@ -230,6 +234,17 @@ class ScenarioEngine:
                     for port in device.ports:
                         if port.number == port_num:
                             port.is_up = True
+                            break
+
+            elif action_type == "port_errors":
+                serial = action.get("device", "")
+                port_num = str(action.get("port", ""))
+                device = self.state.get_device(serial)
+                if device:
+                    for port in device.ports:
+                        if port.number == port_num:
+                            port.errors = []
+                            port.warnings = []
                             break
 
             elif action_type == "sensor_reading":
@@ -343,6 +358,55 @@ class ScenarioEngine:
                 link.is_up = is_up
             elif link.target_serial == serial and link.target_port == port_num:
                 link.is_up = is_up
+
+    async def _apply_port_errors(self, action: dict):
+        """Attach error/warning strings to a port that stays link-up.
+
+        Splunk NI grades a port "critical" when actionable_error_count > 0 and
+        "degraded" when warning_count > 0, but it deliberately ignores the
+        strings "Port disconnected" and "Port disabled". A down access port on
+        its own therefore reads as healthy, so faults that must surface on a
+        non-uplink port need a genuine error string instead.
+        """
+        serial = action.get("device", "")
+        port_num = str(action.get("port", ""))
+        errors = list(action.get("errors", []))
+        warnings = list(action.get("warnings", []))
+        duration = action.get("duration_seconds", 0)
+
+        device = self.state.get_device(serial)
+        if not device:
+            logger.warning(f"port_errors references unknown device {serial}")
+            return
+
+        target = next((p for p in device.ports if p.number == port_num), None)
+        if target is None:
+            logger.warning(f"port_errors references unknown port {port_num} on {serial}")
+            return
+
+        target.errors = errors
+        target.warnings = warnings
+        logger.info(f"Port {port_num} on {serial} -> errors={errors} warnings={warnings}")
+
+        if duration > 0:
+            task = asyncio.create_task(self._clear_port_errors_after(
+                serial, port_num, duration))
+            self._tasks.append(task)
+
+    async def _clear_port_errors_after(self, serial: str, port_num: str, delay: int):
+        try:
+            await asyncio.sleep(delay)
+            device = self.state.get_device(serial)
+            if not device:
+                return
+            for port in device.ports:
+                if port.number == port_num:
+                    port.errors = []
+                    port.warnings = []
+                    break
+            logger.info(f"Port {port_num} on {serial} errors cleared after {delay}s")
+        except asyncio.CancelledError:
+            raise
 
     def _apply_security_event(self, action: dict):
         serial = action.get("device", "")

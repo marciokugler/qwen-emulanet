@@ -75,16 +75,24 @@ Volumes are persistent, so apps installed from Splunkbase survive restarts.
 
 ### Install the Splunk apps
 
-Both are free but require a Splunk.com login, so install them from the Splunk
-UI (**Apps → Find More Apps**) or download from Splunkbase:
+Both are free but need a Splunk.com login. Install from the Splunk UI
+(**Apps → Find More Apps**) or drop the tarballs into `/opt/splunk/etc/apps`:
 
-1. **Splunk Network Intelligence** — [splunkbase app 9913](https://splunkbase.splunk.com/app/9913)
-2. **Cisco Meraki Add-on for Splunk** — the collector NI depends on
+1. **Splunk Network Intelligence** — [splunkbase app 9913](https://splunkbase.splunk.com/app/9913) (app id `network_intelligence`)
+2. **Cisco Meraki Add-on for Splunk** (app id `Splunk_TA_cisco_meraki`)
 
-### Point the Meraki Add-on at the emulator
+> The **Cisco Enterprise Networking Add-on** (`TA_cisco_catalyst`) is *not* what
+> this emulator feeds. Its own manifest says it "collects data from Cisco
+> Catalyst Center, Cisco SD-WAN, Cisco Identity Services Engine, and Cisco
+> Cyber Vision" — it contains no Meraki code and no place to enter a Meraki API
+> key. Cisco runs Meraki and Catalyst as separate product lines with separate
+> management APIs, so NI treats them as separate sources (`meraki`,
+> `catalyst_center`, `thousandeyes`).
+
+### Configure the Meraki Add-on
 
 The emulator runs on the **host**, not inside Splunk's container, so
-`localhost` will not resolve to it. Use `host.docker.internal`:
+`localhost` resolves to the container itself. Use `host.docker.internal`:
 
 | Setting | Value |
 |---|---|
@@ -92,20 +100,64 @@ The emulator runs on the **host**, not inside Splunk's container, so
 | API Key | `6789123456789012345678901234567890123456` |
 | Organization ID | `2947` |
 | Service Region | Global |
+| Index | `main` |
 
-Enable the topology inputs (`devices_topology_nodes_discovered`,
-`devices_topology_l2_links`, `switch_ports_statuses_by_switch`) or Network
-Intelligence will have no graph to draw.
+Creating the organization account also creates the **dedicated inputs**
+(`devices`, `devices/availabilities`, `switch/ports/bySwitch`,
+`devices/uplinks/addresses/byDevice`, `devices/uplinksLossAndLatency`, …).
 
-To also send webhook alerts via HEC, set in `config/settings.yaml`:
+#### Topology inputs need the Custom API picker
+
+`devices/topology/nodes/discovered` and `devices/topology/l2/links` are **not**
+in the add-on's bundled SDK catalog, so they will not appear by default. The
+add-on is catalog-constrained — it refuses arbitrary URLs — but it discovers
+extra endpoints from the organization's OpenAPI document, which this emulator
+serves at `/organizations/{orgId}/openapiSpec`.
+
+To select them:
+
+1. **Configuration → Inputs → Custom API (Generic Endpoint)**
+2. Choose the organization account (the picker stays disabled until you do)
+3. Tick **Include newly discovered** — the two topology endpoints appear there
+4. If they don't show, click **Refresh now** (the catalog is cached 24h)
+5. Set query parameters to `{"perPage": 1000}`
+6. Interval `3600` (the minimum allowed), index `main`
+
+`perPage` matters more than it looks. The collector only unwraps a
+`{"items": [...]}` envelope when the endpoint is flagged `paginated`, and that
+flag is set by the presence of `perPage`. Without it the whole envelope lands as
+a single event and NI finds no `source.device.id` / `target.device.id` at the
+top level — an empty graph with no error anywhere.
+
+On save the add-on issues one real request and rejects a deterministic
+400/403/404, so every endpoint must answer 200 to a bare GET.
+`verify_addon_live.py` checks exactly that.
+
+### Enable the Meraki source in Network Intelligence
+
+NI ships with all three sources disabled. In **Network Intelligence →
+Configuration**, enable `meraki` and set the index (`main`) plus a collection
+interval. NI reads events the add-on already wrote; it does not poll Meraki
+itself.
+
+### Optional: webhook alerts via HEC
+
+Left **disabled** by default so that anything appearing in Splunk provably came
+from the add-on polling this API. To also exercise Meraki's webhook alerting,
+set in `config/settings.yaml`:
 
 ```yaml
 splunk_hec:
   enabled: true
-  url: "http://localhost:8088/services/collector"
+  url: "https://localhost:8088/services/collector"   # https — see below
   token: "11111111-1111-1111-1111-111111111111"
   index: "main"
+  verify_ssl: false
 ```
+
+> Splunk sets `enableSplunkHTTPSSL=true` by default, so HEC is **HTTPS only**.
+> Plain `http://` to 8088 fails with `connection reset by peer`, which reads
+> like a firewall problem rather than a scheme mismatch.
 
 ## The demo topology: Northwind Retail Group
 
@@ -166,43 +218,71 @@ Intelligence's value is walking **event → device → topology**.
 
 ## Verification
 
-Three scripts assert behaviour rather than just printing it:
+Four scripts assert behaviour rather than just printing it:
 
 ```bash
-python verify_topology.py     # schema + business context + scenario references
-python verify_scenarios.py    # live scenario propagation (needs run.py up)
-python verify_splunk_e2e.py   # live emulator -> HEC -> Splunk search (needs both up)
+python verify_topology.py         # offline: schemas, business context, scenario refs
+python verify_addon_contract.py   # offline: add-on discovery policy + NI field contract
+python verify_addon_live.py       # live: every endpoint called from inside the container
+python verify_scenarios.py        # live: scenario propagation + NI fault grading
 ```
 
-**`verify_topology.py`** checks response shapes against the documented Meraki
-schemas, asserts all five device families appear as discovered nodes, that LLDP
-discovery is **bidirectional**, that uncabled ports do not report `Connected`,
-that no device silently falls back to a generic system description, and that
-every scenario references a real device and network.
+The last two need `run.py` and the Splunk container running.
 
-**`verify_scenarios.py`** triggers a live scenario and asserts the port flap
-reaches the L2 link state, the Meraki port status, event attribution, network
-scoping, and removal from `nodes/discovered`.
+**`verify_topology.py`** — response shapes against the documented Meraki schemas;
+all five device families discoverable; LLDP discovery bidirectional; uncabled
+ports not reporting `Connected`; no silent fallback descriptions; MACs valid
+six-octet and unique; every scenario references a real device and network.
 
-**`verify_splunk_e2e.py`** posts a uniquely-marked webhook through HEC, triggers
-a live scenario, then queries Splunk over REST to confirm the event is
-searchable and that business context survives ingestion. It uses the REST API
-rather than `splunk search` — the CLI fails with permission errors in this
-container (it runs as root while Splunk files are owned by `splunk`).
+**`verify_addon_contract.py`** — mirrors the add-on's discovery policy from
+`cisco_meraki_catalog_refresh.py` and asserts our OpenAPI document passes it,
+that `_endpoint_name()` derives the exact strings NI matches on, that `perPage`
+is declared so `paginated` resolves true, that every NI-consumed route is
+registered at the documented path, and that each payload matches the field
+expressions in NI's `props.conf` / `capability_bindings.conf`. It finishes by
+exercising **all 110 GET routes**, which is what caught two handlers that had
+been returning HTTP 500 since they were written.
+
+**`verify_addon_live.py`** — issues every request the add-on will make, from
+inside the Splunk container over `host.docker.internal`, asserting 200s and
+documented shapes. Also checks the save-time probe (bare GET must not 404) and
+that an invalid API key is rejected with 401.
+
+**`verify_scenarios.py`** — triggers live scenarios and asserts the fault
+propagates to the L2 link state, the Meraki port enum, LLDP discovery, and event
+attribution — then reproduces NI's `state_expr` to confirm the fault is actually
+graded `critical` rather than `ok`.
+
+### Why the grading checks exist
+
+NI grades an interface like this:
+
+```
+critical  if enabled AND status=="disconnected" AND isUplink
+critical  if actionable_error_count > 0
+degraded  if warning_count > 0
+ok        otherwise, when status is non-empty
+```
+
+and it **excludes** the literal strings `"port disconnected"` and
+`"port disabled"` from the actionable-error count. The consequence is
+counter-intuitive: a down *access* port reads as healthy, because an unplugged
+access port is normal. Scenarios must therefore either target an uplink or
+inject a genuine error string. Both paths are covered and asserted.
 
 ## Project layout
 
 ```
 config/
   topology.yaml          # Sites, devices, L2 cabling, VLANs, SSIDs, clients
-  scenarios.yaml         # 15 retail scenarios with business impact
+  scenarios.yaml         # Retail scenarios with business impact
   settings.yaml          # Ports, API key, HEC target (gitignored)
   settings.example.yaml  # Template
 src/
   topology/models.py     # Device, Link, Vlan, Ssid, Client, TopologyState
   topology/loader.py     # YAML -> state, expands the store template
-  api/server.py          # Meraki Dashboard API mock (80+ endpoints)
-  data/topology.py       # The Splunk NI topology endpoints + LLDP/CDP
+  api/server.py          # Meraki Dashboard API mock (110 GET routes)
+  data/topology.py       # Topology, port, uplink and OpenAPI responses
   data/generators.py     # Inventory, health, VPN, client, security responses
   data/scenarios.py      # Async scenario engine (scheduled + probabilistic)
   webhooks/generator.py  # Meraki webhook alert payloads
@@ -210,6 +290,8 @@ src/
 web/index.html           # Dashboard — topology, sites, events, scenarios
 splunk/docker-compose.yml
 verify_topology.py
+verify_addon_contract.py
+verify_addon_live.py
 verify_scenarios.py
 verify_splunk_e2e.py     # Live emulator -> HEC -> Splunk search
 build_preview.py         # Snapshots live data into a static HTML preview

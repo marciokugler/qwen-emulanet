@@ -25,12 +25,38 @@ ROLE_NODE = {
     "cam_stock": NodeRole.CAMERA, "sensor": NodeRole.SENSOR,
 }
 
+# MAC octets 4-6 per role, so the composed address is a valid six-octet MAC:
+# 0c:05:<site octet>:<role three octets>. Splunk NI parents interface vertices
+# to devices by MAC, so a malformed address silently breaks that join.
 ROLE_MAC = {
-    "gateway": "01:01", "switch": "02:01",
-    "ap_sales": "03:01", "ap_back": "03:02",
-    "cam_entrance": "04:01", "cam_pos": "04:02", "cam_stock": "04:03",
-    "sensor": "05:01",
+    "gateway": "01:01:00", "switch": "02:01:00",
+    "ap_sales": "03:01:00", "ap_back": "03:02:00",
+    "cam_entrance": "04:01:00", "cam_pos": "04:02:00", "cam_stock": "04:03:00",
+    "sensor": "05:01:00",
 }
+
+# Two-octet vendor prefix per client class, chosen to look like the real
+# hardware each class runs on (POS terminals, Zebra scanners, handsets...).
+CLIENT_OUI = {
+    "pos": "d8:bb",
+    "scanner": "5c:f9",
+    "guest": "a4:5e",
+    "associate": "3c:22",
+    "iot": "b8:27",
+    "av-system": "f0:18",
+}
+
+
+def _client_mac(client_type: str, client_idx: int, site_octet_hex: str,
+                vlan: int, variant: int) -> str:
+    """Compose a valid, unique six-octet client MAC.
+
+    Layout: <oui:2> <template index:1> <site octet:1> <vlan:1> <variant:1>.
+    The template index keeps two clients on the same VLAN at the same site
+    distinct — without it both POS lanes would collide on one address.
+    """
+    oui = CLIENT_OUI.get(client_type, "a4:5e")
+    return f"{oui}:{client_idx:02x}:{site_octet_hex}:{vlan:02x}:{variant:02x}"
 
 # (link_ports key, source role, target role) for store template cabling.
 STORE_LINKS = [
@@ -299,7 +325,7 @@ def _expand_store(store: dict, template: dict, vlan_template: list[dict],
         ))
 
     clients: list[Client] = []
-    for spec in template["clients"]:
+    for client_idx, spec in enumerate(template["clients"], start=1):
         role = spec["role"]
         attach = devices.get(spec["attach_to"])
         if not attach:
@@ -318,7 +344,8 @@ def _expand_store(store: dict, template: dict, vlan_template: list[dict],
             ip = f"{prefix}.{spec['ip_suffix'].rsplit('.', 1)[0]}.{int(ip_host) + v}"
 
             clients.append(Client(
-                mac=f"{'d8:bb:c1' if spec['client_type'] == 'pos' else 'a4:5e:60'}:{octet_hex}:{v + 1:02x}:{spec['vlan']:02x}:{role[-4:].encode().hex()[:2]}",
+                mac=_client_mac(spec["client_type"], client_idx, octet_hex,
+                                spec["vlan"], v + 1),
                 hostname=hostname,
                 description=spec["description"],
                 ip=ip,

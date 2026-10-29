@@ -12,6 +12,7 @@ Schemas verified against developer.cisco.com/meraki/api-v1.
 from __future__ import annotations
 
 import time
+import zlib
 from typing import Optional
 
 from src.topology.models import (
@@ -394,26 +395,76 @@ def _uplink_vlan(state: TopologyState, device: Device) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Switch port statuses — feeds switch_ports_statuses_by_switch
+# Port field helpers — values must match the documented Meraki enums exactly.
+# Splunk NI lowercases and string-matches these, so a near-miss silently
+# degrades to "unknown" instead of surfacing as a fault.
 # ---------------------------------------------------------------------------
+def port_status_str(port) -> str:
+    """Meraki enum: Connected | Disabled | Disconnected."""
+    if not port.enabled:
+        return "Disabled"
+    return "Connected" if port.is_up else "Disconnected"
+
+
+def port_speed_str(port) -> str:
+    """Meraki enum: "" | "1 Gbps" | "10 Gbps" | ... (a string, never an int).
+
+    NI parses this with match(lower(speed), "^[0-9.]+ gbps$"), so an integer
+    such as 10000 yields a null speed_bps.
+    """
+    if not port.is_up:
+        return ""
+    # SFP+ uplinks on the 48-port MS350 models are ports 49/50.
+    if port.number.isdigit() and int(port.number) >= 49:
+        return "10 Gbps"
+    return "1 Gbps"
+
+
+def _port_status_object(port) -> dict:
+    """The port object shared by both status endpoints.
+
+    errors[] and warnings[] drive NI's grading: actionable_error_count>0 is
+    "critical", warning_count>0 is "degraded". NI filters out the strings
+    "port disconnected" and "port disabled", so those alone never raise a fault.
+    """
+    errors = list(port.errors)
+    if not port.is_up and port.enabled:
+        errors.append("Port disconnected")
+
+    return {
+        "portId": port.number,
+        "enabled": port.enabled,
+        "status": port_status_str(port),
+        "isUplink": port.type == "trunk",
+        "errors": errors,
+        "warnings": list(port.warnings),
+        "speed": port_speed_str(port),
+        "duplex": "full" if port.is_up else "",
+        "spanningTree": {
+            "statuses": ["Forwarding"] if port.is_up and port.rstp_enabled else [],
+        },
+        "poe": {"isAllocated": bool(port.poe_enabled and port.is_up)},
+        "securePort": {
+            "active": False,
+            "authenticationStatus": "Disabled",
+        },
+    }
+
+
 def generate_switch_port_statuses(state: TopologyState, serial: str) -> list[dict]:
+    """GET /devices/{serial}/switch/ports/statuses — bare array of ports."""
     device = state.get_device(serial)
     if not device or device.family != DeviceFamily.MS:
         return []
 
     results = []
     for port in device.ports:
-        results.append({
-            "portId": port.number,
-            "enabled": port.enabled and port.is_up,
-            "status": "Connected" if port.is_up and port.enabled else "Not connected",
-            "isUplink": port.type == "trunk",
-            "speed": 10000 if port.number.isdigit() and int(port.number) >= 49 else
-                     (1000 if port.is_up else 0),
-            "duplex": "full" if port.is_up else "none",
+        entry = _port_status_object(port)
+        # Per-device extras this endpoint adds over the bySwitch variant.
+        entry.update({
             "macWhitelist": [],
             "tags": port.tags,
-            "portScheduleId": "",
+            "portScheduleId": port.port_schedule_id,
             "clientCount": port.client_count if port.is_up else 0,
             "usageInKb": {
                 "total": _deterministic_usage(device.serial, port.number, 5_000_000),
@@ -422,19 +473,394 @@ def generate_switch_port_statuses(state: TopologyState, serial: str) -> list[dic
             },
             "powerUsageInWh": round(6.5 + _deterministic_usage(device.serial, port.number, 200) / 20, 2)
                               if port.poe_enabled and port.is_up else 0.0,
-            "securePort": {"enabled": False},
             "clientMacList": [],
             # Business context: what is actually cabled into this port.
             "connectedDeviceSerial": port.connected_serial or "",
             "vlan": port.vlan,
         })
+        results.append(entry)
 
     return results
 
 
+def generate_switch_port_statuses_by_switch(state: TopologyState,
+                                            per_page: int = 1000) -> dict:
+    """GET /organizations/{orgId}/switch/ports/statuses/bySwitch
+
+    Enveloped, one record per switch with a nested ports[] array. Feeds NI's
+    meraki.interface_status capability (endpoint_name=switch_ports_statuses_by_switch).
+    """
+    items = []
+    for device in state.get_devices_by_model_prefix("MS"):
+        network = state.get_network(device.network_id)
+        items.append({
+            "name": device.name,
+            "serial": device.serial,
+            "mac": device.mac,
+            "network": {
+                "name": network.name if network else "",
+                "id": device.network_id,
+            },
+            "model": device.model,
+            "ports": [_port_status_object(p) for p in device.ports],
+        })
+
+    return {
+        "items": items[:per_page],
+        "meta": {"counts": {"items": {
+            "total": len(items),
+            "remaining": max(0, len(items) - per_page),
+        }}},
+    }
+
+
+def generate_switch_ports_by_switch(state: TopologyState) -> list[dict]:
+    """GET /organizations/{orgId}/switch/ports/bySwitch — bare array.
+
+    Feeds NI's meraki.switchportsbyswitch graph adapter, which parents each
+    interface vertex to a device via lower(replace(trim(mac),"-",":")) and to a
+    site via coalesce('network.id', networkId). The per-switch mac and
+    network.id are therefore load-bearing, not decorative.
+    """
+    results = []
+    for device in state.get_devices_by_model_prefix("MS"):
+        network = state.get_network(device.network_id)
+        ports = []
+        for port in device.ports:
+            ports.append({
+                "portId": port.number,
+                "name": port.name or None,
+                "tags": port.tags,
+                "enabled": port.enabled,
+                "poeEnabled": port.poe_enabled,
+                "perpetualPoe": {"enabled": False},
+                "fastPoe": {"enabled": False},
+                "type": port.type,
+                "vlan": port.vlan if port.type == "access" else 1,
+                "voiceVlan": 20 if port.vlan == 10 else None,
+                "allowedVlans": "all" if port.type == "trunk" else str(port.vlan),
+                "rstpEnabled": port.rstp_enabled,
+                "stpGuard": port.stp_guard,
+                "linkNegotiation": port.link_negotiation,
+                "accessPolicyType": "MAC allow list" if port.vlan == 30 else "Open",
+            })
+            # POS ports are locked to an allow list — PCI DSS requirement 1.
+            if port.vlan == 30:
+                ports[-1]["stickyMacAllowList"] = []
+                ports[-1]["stickyMacAllowListLimit"] = 4
+
+        results.append({
+            "name": device.name,
+            "serial": device.serial,
+            "mac": device.mac,
+            "network": {
+                "name": network.name if network else "",
+                "id": device.network_id,
+            },
+            "model": device.model,
+            "ports": ports,
+        })
+
+    return results
+
+
+def generate_switch_ports_usage_history(state: TopologyState,
+                                        timespan: int = 1200,
+                                        per_page: int = 1000) -> dict:
+    """GET /organizations/{orgId}/switch/ports/usage/history/byDevice/byInterval
+
+    Enveloped. Feeds NI's meraki.interface_throughput and meraki.interface_power.
+    data.usage is kilobytes (int), bandwidth.usage is kilobits/sec (float),
+    energy.usage is watt-hours (float).
+    """
+    now = int(time.time())
+    start = now - timespan
+
+    items = []
+    for device in state.get_devices_by_model_prefix("MS"):
+        network = state.get_network(device.network_id)
+        ports = []
+        for port in device.ports:
+            if not port.is_up:
+                continue
+            total_kb = _deterministic_usage(device.serial, port.number, 4_000_000)
+            up_kb = total_kb // 2
+            down_kb = total_kb - up_kb
+            seconds = max(timespan, 1)
+            ports.append({
+                "portId": port.number,
+                "intervals": [{
+                    "startTs": _ts_iso(start),
+                    "endTs": _ts_iso(now),
+                    "data": {"usage": {
+                        "total": total_kb,
+                        "upstream": up_kb,
+                        "downstream": down_kb,
+                    }},
+                    "bandwidth": {"usage": {
+                        # kilobytes over the interval -> average kilobits/sec
+                        "total": round(total_kb * 8 / seconds, 2),
+                        "upstream": round(up_kb * 8 / seconds, 2),
+                        "downstream": round(down_kb * 8 / seconds, 2),
+                    }},
+                    "energy": {"usage": {
+                        "total": round(6.5 + _deterministic_usage(
+                            device.serial, port.number, 200) / 20, 2)
+                        if port.poe_enabled else 0.0,
+                    }},
+                }],
+            })
+
+        items.append({
+            "name": device.name,
+            "serial": device.serial,
+            "mac": device.mac,
+            "network": {
+                "name": network.name if network else "",
+                "id": device.network_id,
+            },
+            "model": device.model,
+            "ports": ports,
+        })
+
+    return {
+        "items": items[:per_page],
+        "meta": {"counts": {"items": {
+            "total": len(items),
+            "remaining": max(0, len(items) - per_page),
+        }}},
+    }
+
+
+def generate_uplink_addresses_by_device(state: TopologyState) -> list[dict]:
+    """GET /organizations/{orgId}/devices/uplinks/addresses/byDevice — bare array.
+
+    Feeds NI's meraki.devicesuplinksaddressesbydevice adapter, which creates WAN
+    and management interface vertices parented by mac. The interface value must
+    come from the documented enum: wan1, wan2, man1, man2, cellular.
+    """
+    results = []
+    for device in state.get_all_devices():
+        if not device.uplink:
+            continue
+
+        addresses = [{
+            "protocol": "ipv4",
+            "assignmentMode": "static",
+            "address": device.uplink.wan_ip or device.uplink.ip,
+            "gateway": device.uplink.gateway or "",
+            "nameservers": {"addresses": ["8.8.8.8", "1.1.1.1"]},
+            "public": {"address": device.uplink.public_ip or device.uplink.wan_ip},
+            "vlan": {"id": "99"},
+        }]
+
+        results.append({
+            "mac": device.mac,
+            "name": device.name,
+            "network": {"id": device.network_id},
+            "productType": device.device_type,
+            "serial": device.serial,
+            "tags": device.tags,
+            "uplinks": [{
+                "interface": "wan1",
+                "addresses": addresses,
+            }],
+        })
+
+    return results
+
+
+def generate_uplinks_loss_and_latency(state: TopologyState,
+                                      timespan: int = 3600) -> list[dict]:
+    """GET /organizations/{orgId}/devices/uplinksLossAndLatency — bare array.
+
+    Note the path has no slash before "Loss". Feeds NI's
+    meraki.interface_uplink_quality, which expands timeSeries{} and grades
+    critical at loss>=20 or latency>=300, degraded at loss>=5 or latency>=150.
+    """
+    now = int(time.time())
+    results = []
+
+    for device in state.get_all_devices():
+        if not device.uplink:
+            continue
+
+        # Sample every 5 minutes across the window, capped for payload size.
+        step = 300
+        points = max(1, min(timespan // step, 24))
+        series = []
+        for i in range(points):
+            ts = now - (points - 1 - i) * step
+            loss, latency = _uplink_sample(device, ts)
+            series.append({
+                "ts": _ts_iso(ts),
+                "lossPercent": loss,
+                "latencyMs": latency,
+            })
+
+        results.append({
+            "networkId": device.network_id,
+            "serial": device.serial,
+            "uplink": "wan1",
+            "ip": device.uplink.wan_ip or device.uplink.ip,
+            "timeSeries": series,
+        })
+
+    return results
+
+
+def _uplink_sample(device: Device, ts: int) -> tuple[float, float]:
+    """Loss/latency for one sample, honouring the device's current health."""
+    if device.status == DeviceStatus.OFFLINE:
+        return 100.0, 0.0
+    if device.status == DeviceStatus.DEGRADED:
+        # Cross NI's critical threshold (loss>=20 or latency>=300) so the
+        # scenario actually surfaces as a fault rather than "ok".
+        return round(device.uplink.loss_percent, 2), round(device.uplink.latency_ms, 1)
+
+    # Healthy links jitter slightly but stay well inside the "ok" band.
+    jitter = (zlib.crc32(f"{device.serial}:{ts}".encode()) % 100) / 100.0
+    return round(min(device.uplink.loss_percent, 0.4) * jitter, 2), \
+        round(device.uplink.latency_ms * (0.9 + 0.2 * jitter), 1)
+
+
 def _deterministic_usage(serial: str, port: str, modulus: int) -> int:
-    """Stable pseudo-random usage so repeated polls do not jitter wildly."""
-    return (hash(f"{serial}:{port}") % modulus) if modulus else 0
+    """Stable pseudo-random usage so repeated polls do not jitter wildly.
+
+    Uses crc32 rather than the builtin hash(), which is salted per process and
+    would reshuffle every port's counters on each emulator restart.
+    """
+    if not modulus:
+        return 0
+    return zlib.crc32(f"{serial}:{port}".encode()) % modulus
+
+
+# ---------------------------------------------------------------------------
+# Organization OpenAPI document — GET /organizations/{orgId}/openapiSpec
+#
+# The Splunk Meraki add-on is catalog-constrained: it will only poll endpoints
+# from its bundled SDK catalog, or ones it discovers from this document. The
+# two topology endpoints NI needs are not in the bundled catalog, so they must
+# appear here or they can never be selected in the add-on UI.
+#
+# Discovery rules enforced by the add-on (cisco_meraki_catalog_refresh.py):
+#   - path under /organizations/{organizationId}, organizationId the ONLY placeholder
+#   - operationId starts with "get", <= 256 chars
+#   - tags are strings, none in the blocked set
+#   - no requestBody
+#   - a 2xx/default response declaring application/json
+#   - query param names match [A-Za-z][A-Za-z0-9_]*, type in
+#     {string, integer, number, boolean}
+#   - "perPage" present => paginated=True, which routes collection through
+#     _page_items() and unwraps the {"items": [...]} envelope. Without it the
+#     collector emits one event holding the whole envelope and NI finds no edges.
+# ---------------------------------------------------------------------------
+_ORG_ID_PARAM = {
+    "name": "organizationId",
+    "in": "path",
+    "required": True,
+    "description": "Organization ID",
+    "schema": {"type": "string"},
+}
+
+_PER_PAGE_PARAM = {
+    "name": "perPage",
+    "in": "query",
+    "required": False,
+    "description": "The number of entries per page returned.",
+    "schema": {"type": "integer", "minimum": 3, "maximum": 1000},
+}
+
+_STARTING_AFTER_PARAM = {
+    "name": "startingAfter",
+    "in": "query",
+    "required": False,
+    "description": "A token used by pagination indexes for subsequent queries.",
+    "schema": {"type": "string"},
+}
+
+_ENDING_BEFORE_PARAM = {
+    "name": "endingBefore",
+    "in": "query",
+    "required": False,
+    "description": "A token used by pagination indexes for preceding queries.",
+    "schema": {"type": "string"},
+}
+
+# operationId -> endpoint_name after the add-on strips "getOrganization" and
+# snake_cases the remainder. These two strings are exactly what NI's props.conf
+# matches on to build connected_to edges.
+_DISCOVERABLE_OPERATIONS = [
+    {
+        "path": "/organizations/{organizationId}/devices/topology/nodes/discovered",
+        "operationId": "getOrganizationDevicesTopologyNodesDiscovered",
+        "summary": ("List topology nodes discovered by LLDP/CDP from devices in "
+                    "an organization, including reported metadata when available"),
+        "tags": ["devices", "monitor", "topology"],
+    },
+    {
+        "path": "/organizations/{organizationId}/devices/topology/l2/links",
+        "operationId": "getOrganizationDevicesTopologyL2Links",
+        "summary": "List layer 2 topology links originating from devices in an organization",
+        "tags": ["devices", "monitor", "topology"],
+    },
+]
+
+
+def _json_response(description: str) -> dict:
+    return {
+        "description": description,
+        "content": {"application/json": {"schema": {"type": "object"}}},
+    }
+
+
+def generate_openapi_spec(state: TopologyState) -> dict:
+    """Build the organization OpenAPI document served to the add-on."""
+    paths: dict[str, dict] = {}
+
+    for op in _DISCOVERABLE_OPERATIONS:
+        paths[op["path"]] = {
+            "get": {
+                "operationId": op["operationId"],
+                "summary": op["summary"],
+                "description": op["summary"],
+                "tags": list(op["tags"]),
+                "parameters": [
+                    _ORG_ID_PARAM,
+                    _PER_PAGE_PARAM,
+                    _STARTING_AFTER_PARAM,
+                    _ENDING_BEFORE_PARAM,
+                ],
+                "responses": {
+                    "200": _json_response("Successful operation"),
+                    "400": _json_response("Bad request"),
+                    "401": _json_response("Unauthorized"),
+                    "429": _json_response("Too many requests"),
+                },
+            }
+        }
+
+    return {
+        "openapi": "3.0.1",
+        "info": {
+            "title": "Meraki Dashboard API",
+            "description": "Cisco Meraki Dashboard API v1 (emulated)",
+            "version": "1.53.0",
+            "contact": {"name": "Cisco Meraki", "url": "https://developer.cisco.com/meraki"},
+            "license": {"name": "Cisco End User License Agreement",
+                        "url": "https://www.cisco.com/c/en/us/about/legal/cloud-and-software/end_user_license_agreement.html"},
+        },
+        "servers": [{"url": "/api/v1", "description": "Meraki Dashboard API"}],
+        "security": [{"bearerAuth": []}, {"apiKeyAuth": []}],
+        "paths": paths,
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+                "apiKeyAuth": {"type": "apiKey", "in": "header",
+                               "name": "X-Cisco-Meraki-API-Key"},
+            },
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
