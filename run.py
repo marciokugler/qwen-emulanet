@@ -19,8 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.topology.loader import load_topology
+from src.topology.catalyst_loader import load_catalyst_topology, seed_issues
 from src.topology.models import TopologyState, DeviceStatus
 from src.api.server import create_api_server
+from src.api.catalyst_server import create_catalyst_server
 from src.webhooks.sender import SplunkHECSender
 from src.data.scenarios import ScenarioEngine
 from src.data import generators as gen
@@ -436,6 +438,25 @@ async def main():
     logger.info(f"Loaded topology: {len(state.get_all_devices())} devices, "
                 f"{len(state.networks)} networks, {len(state.clients)} clients")
 
+    catalyst_config = settings.get("catalyst", {})
+    catalyst_state = None
+    if catalyst_config.get("enabled", False):
+        catalyst_state, shared_with_meraki = load_catalyst_topology(
+            catalyst_config.get("topology_file", "config/catalyst_topology.yaml"),
+            "config/topology.yaml",
+        )
+        seed_issues(catalyst_state, int(time.time() * 1000))
+        summary = catalyst_state.summary()
+        logger.info(
+            f"Loaded Catalyst Center topology: {summary['devices']} devices, "
+            f"{summary['sites']} sites, {summary['interfaces']} interfaces, "
+            f"{summary['links']} links")
+        if shared_with_meraki:
+            logger.info("Catalyst devices also present in Meraki — NI fuses these "
+                        f"into one vertex: {', '.join(shared_with_meraki)}")
+    else:
+        logger.info("Catalyst Center API disabled in settings")
+
     hec_sender = None
     hec_config = settings.get("splunk_hec", {})
     if hec_config.get("enabled", False):
@@ -453,6 +474,8 @@ async def main():
 
     api_app = create_api_server(state, settings["server"]["api_key"])
     dashboard_app = create_dashboard_app(state, scenario_engine, settings)
+    catalyst_app = (create_catalyst_server(catalyst_state, catalyst_config)
+                    if catalyst_state is not None else None)
 
     server_config = settings.get("server", {})
     dashboard_config = settings.get("dashboard", {})
@@ -487,17 +510,32 @@ async def main():
         api_app, host=api_host, port=api_port, log_level="warning", **tls_kwargs)
     config_dash = uvicorn.Config(dashboard_app, host=dash_host, port=dash_port, log_level="warning")
 
-    server_api = uvicorn.Server(config_api)
-    server_dash = uvicorn.Server(config_dash)
+    servers = [uvicorn.Server(config_api), uvicorn.Server(config_dash)]
+
+    catalyst_port = None
+    if catalyst_app is not None:
+        catalyst_host = catalyst_config.get("host", "0.0.0.0")
+        catalyst_port = int(catalyst_config.get("port", 5001))
+        # The Catalyst add-on rejects a base URL that is not https:// in four
+        # separate places, so this app must serve TLS whenever the Meraki one
+        # does — the same self-signed cert covers both hostnames.
+        config_catalyst = uvicorn.Config(
+            catalyst_app, host=catalyst_host, port=catalyst_port,
+            log_level="warning", **tls_kwargs)
+        servers.append(uvicorn.Server(config_catalyst))
+        logger.info(
+            f"Starting Catalyst Center API emulator on {api_scheme}://{catalyst_host}:{catalyst_port}")
+        logger.info(
+            f"Point Catalyst Add-on 'Cisco Catalyst Center Host' to: "
+            f"{api_scheme}://<your-ip>:{catalyst_port} (username "
+            f"{catalyst_config.get('username', '')!r})")
 
     verify_task = asyncio.create_task(
-        _verify_reachable(api_port, dash_port, settings["server"]["api_key"], api_scheme))
+        _verify_reachable(api_port, dash_port, settings["server"]["api_key"],
+                          api_scheme, catalyst_port, catalyst_config))
 
     try:
-        await asyncio.gather(
-            server_api.serve(),
-            server_dash.serve(),
-        )
+        await asyncio.gather(*(server.serve() for server in servers))
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down...")
     finally:
@@ -509,7 +547,9 @@ async def main():
 
 
 async def _verify_reachable(api_port: int, dash_port: int, api_key: str,
-                            api_scheme: str = "http"):
+                            api_scheme: str = "http",
+                            catalyst_port: int = None,
+                            catalyst_config: dict = None):
     """Confirm both servers actually answer on localhost.
 
     Binding 0.0.0.0:<port> can succeed while another process holds the more
@@ -525,6 +565,10 @@ async def _verify_reachable(api_port: int, dash_port: int, api_key: str,
         ("Dashboard", f"http://127.0.0.1:{dash_port}/api/status",
          {"organization", "total_devices", "scenario_engine"}),
     ]
+    if catalyst_port:
+        checks.append(
+            ("Catalyst API", f"{api_scheme}://127.0.0.1:{catalyst_port}/health",
+             {"status", "controller", "devices", "sites"}))
 
     for label, url, required_keys in checks:
         port = url.split(":")[2].split("/")[0]
@@ -572,6 +616,38 @@ async def _verify_reachable(api_port: int, dash_port: int, api_key: str,
             logger.warning(f"Meraki API auth check returned HTTP {resp.status_code}")
     except Exception as exc:
         logger.error(f"Meraki API auth check failed: {exc}")
+
+    # Prove the Catalyst token round-trip. Every Catalyst add-on input starts
+    # with this exchange, and a wrong key casing in the response degrades into
+    # a 401 loop that never names the real cause — so check both halves here.
+    if catalyst_port and catalyst_config:
+        base = f"{api_scheme}://127.0.0.1:{catalyst_port}"
+        try:
+            async with httpx.AsyncClient(
+                    timeout=8.0, verify=api_scheme != "https") as client:
+                resp = await client.post(
+                    f"{base}/dna/system/api/v1/auth/token",
+                    auth=(catalyst_config.get("username", ""),
+                          catalyst_config.get("password", "")))
+                token = resp.json().get("Token") if resp.status_code == 200 else None
+                if not token:
+                    logger.warning(
+                        f"Catalyst token request returned HTTP {resp.status_code} "
+                        "with no 'Token' key")
+                else:
+                    count = await client.get(
+                        f"{base}/dna/intent/api/v1/network-device/count",
+                        headers={"X-Auth-Token": token})
+                    if count.status_code == 200:
+                        logger.info(
+                            "Catalyst API auth verified: token issued and accepted, "
+                            f"inventory count={count.json()['response']['count']}")
+                    else:
+                        logger.warning(
+                            "Catalyst API issued a token but the authenticated call "
+                            f"returned HTTP {count.status_code}")
+        except Exception as exc:
+            logger.error(f"Catalyst API auth check failed: {exc}")
 
 
 if __name__ == "__main__":

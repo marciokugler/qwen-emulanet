@@ -4,6 +4,17 @@ server:
   api_key: "6789123456789012345678901234567890123456"
   base_url: "http://localhost:5000"
 
+catalyst:
+  enabled: true
+  host: "0.0.0.0"
+  # Catalyst Center API. Separate port from the Meraki API because the add-on
+  # treats the host as a controller and validates that it is https://.
+  port: 5001
+  topology_file: "config/catalyst_topology.yaml"
+  username: "northwind_admin"
+  password: "Emulanet2026!"
+  token_ttl_seconds: 3600
+
 dashboard:
   host: "0.0.0.0"
   # Avoid 8080 on Windows: wslrelay.exe often forwards a WSL app to

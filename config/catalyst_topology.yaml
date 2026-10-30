@@ -1,0 +1,743 @@
+# Northwind Retail Group — Catalyst Center (DNAC) estate
+#
+# The same fictional company as config/topology.yaml, but the part of the
+# network managed by Cisco Catalyst Center rather than the Meraki dashboard:
+# the campus core, the data centre fabric, and one regional office.
+#
+# Two systems, one estate. HQ is modelled in BOTH: three Meraki switches are
+# mid-migration and were discovered by Catalyst Center over SNMP, so they
+# carry the same serial and MAC in each system. Splunk NI joins device
+# vertices on serial/MAC, so those three fuse into one vertex whose
+# source_systems lists both — the consolidation story the demo tells.
+#
+# Business context is carried only through fields the real DNAC API exposes:
+# hostname, platformId, family, role, site hierarchy, interface names.
+
+controller:
+  # Reported by /dna/intent/api/v1/dnac-release and used for version gating.
+  release: "3.1.3.0"
+  name: "northwind-cc-01"
+  # Every DNAC UUID in this file is derived deterministically from this
+  # namespace so interface UUIDs are stable across restarts. The physical
+  # topology links reference interfaces by UUID, and NI drops an edge whose
+  # startPortID/endPortID do not match a known interface vertex.
+  uuid_namespace: "6f1c1f6e-2a55-4c3f-9d21-4e7a0b5c1d99"
+
+# ---------------------------------------------------------------------------
+# Site hierarchy. DNAC sites are a tree: global -> area -> building -> floor.
+# nameHierarchy is derived by the loader from `parent`, never written by hand.
+# A device's `site` field must match a building or floor NAME exactly — NI
+# resolves site_id_type="site_name" and an unmatched string orphans the device.
+# ---------------------------------------------------------------------------
+sites:
+  - name: "Global"
+    type: "global"
+
+  - name: "HQ Campus"
+    type: "area"
+    parent: "Global"
+    latitude: 47.6091
+    longitude: -122.3390
+
+  - name: "HQ-Seattle"
+    type: "building"
+    parent: "HQ Campus"
+    address: "1201 3rd Ave, Seattle, WA 98101"
+    latitude: 47.60975
+    longitude: -122.33708
+    country: "United States"
+
+  - name: "Floor 1"
+    type: "floor"
+    parent: "HQ-Seattle"
+    floor_number: 1
+    rf_model: "Cubes And Workstations"
+    width: 60
+    length: 40
+    height: 3
+
+  - name: "Floor 2"
+    type: "floor"
+    parent: "HQ-Seattle"
+    floor_number: 2
+    rf_model: "Cubes And Workstations"
+    width: 60
+    length: 40
+    height: 3
+
+  - name: "Data Hall"
+    type: "floor"
+    parent: "HQ-Seattle"
+    floor_number: -1
+    rf_model: "Indoor High Ceiling"
+    width: 30
+    length: 20
+    height: 5
+
+  - name: "Data Centre"
+    type: "area"
+    parent: "Global"
+    latitude: 39.5296
+    longitude: -119.8138
+
+  - name: "DC-Reno"
+    type: "building"
+    parent: "Data Centre"
+    address: "4800 Kietzke Ln, Reno, NV 89509"
+    latitude: 39.4899
+    longitude: -119.8024
+    country: "United States"
+
+  - name: "Server Room"
+    type: "floor"
+    parent: "DC-Reno"
+    floor_number: 1
+    rf_model: "Indoor High Ceiling"
+    width: 50
+    length: 30
+    height: 5
+
+  - name: "Warehouse"
+    type: "floor"
+    parent: "DC-Reno"
+    floor_number: 1
+    rf_model: "Indoor High Ceiling"
+    width: 120
+    length: 80
+    height: 9
+
+  - name: "Regional Offices"
+    type: "area"
+    parent: "Global"
+    latitude: 41.8902
+    longitude: -87.6244
+
+  - name: "Office-Chicago"
+    type: "building"
+    parent: "Regional Offices"
+    address: "233 S Wacker Dr, Chicago, IL 60606"
+    latitude: 41.8789
+    longitude: -87.6359
+    country: "United States"
+
+  - name: "Floor 3"
+    type: "floor"
+    parent: "Office-Chicago"
+    floor_number: 3
+    rf_model: "Cubes And Workstations"
+    width: 40
+    length: 30
+    height: 3
+
+# ---------------------------------------------------------------------------
+# Interface templates. A profile expands into concrete interfaces, each with a
+# stable UUID (derived from device UUID + ifIndex) and an ifIndex. The loader
+# assigns ifIndex sequentially within a device, so profiles only declare the
+# name pattern, count, speed and role of each group.
+#
+#   is_wan: true  -> NI marks the interface entity_subtype "uplink" and grades
+#                    a disconnected WAN interface critical, exactly as it does
+#                    for a Meraki isUplink port. Only set on real uplinks.
+# ---------------------------------------------------------------------------
+port_profiles:
+  # Campus core / DC spine: dense 25G access side, 100G fabric uplinks.
+  c9500-48y4c:
+    - prefix: "TwentyFiveGigE1/0/"
+      count: 48
+      speed: 25000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+    - prefix: "HundredGigE1/0/"
+      count: 4
+      speed: 100000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  c9500-32c:
+    - prefix: "HundredGigE1/0/"
+      count: 32
+      speed: 100000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  # Access switch: 48 PoE access ports, 4 uplinks.
+  c9300-48uxm:
+    - prefix: "GigabitEthernet1/0/"
+      count: 48
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/1/"
+      count: 4
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  c9300-48p:
+    - prefix: "GigabitEthernet1/0/"
+      count: 48
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/1/"
+      count: 4
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  c9300-24p:
+    - prefix: "GigabitEthernet1/0/"
+      count: 24
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/1/"
+      count: 4
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  # Industrial Ethernet switch in the warehouse: 8 PoE + 2 SFP uplinks.
+  ie3400-8p2s:
+    - prefix: "GigabitEthernet1/"
+      count: 8
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/"
+      count: 2
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  # Routers: LAN side plus a real WAN uplink.
+  isr4431:
+    - prefix: "GigabitEthernet0/0/"
+      count: 4
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet0/0/"
+      count: 2
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  isr4331:
+    - prefix: "GigabitEthernet0/0/"
+      count: 3
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+      is_wan: true
+  isr4321:
+    - prefix: "GigabitEthernet0/0/"
+      count: 2
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+      is_wan: true
+  # Wireless: controller and APs are small-port devices.
+  c9800-80:
+    - prefix: "TenGigabitEthernet1/"
+      count: 2
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  c9120-ap:
+    - prefix: "GigabitEthernet0/0/"
+      count: 1
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+      is_wan: true
+  # Meraki switches discovered over SNMP during migration. Catalyst Center
+  # reports them with their real Meraki serial and MAC; interface names are
+  # what SNMP returned, not Catalyst naming.
+  meraki-ms350-48lp:
+    - prefix: "GigabitEthernet1/"
+      count: 48
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/"
+      count: 4
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+  meraki-ms250-48lp:
+    - prefix: "GigabitEthernet1/"
+      count: 48
+      speed: 1000000000
+      interface_type: "Physical"
+      port_mode: "access"
+    - prefix: "TenGigabitEthernet1/"
+      count: 2
+      speed: 10000000000
+      interface_type: "Physical"
+      port_mode: "trunk"
+      is_wan: true
+
+# ---------------------------------------------------------------------------
+# Devices. `serial` and `mac` are the NI fusion keys: a device whose serial or
+# MAC matches a Meraki device becomes ONE vertex with source_systems listing
+# both. Every device must have a non-empty mac — NI's device-vertex search
+# filters on mac_address=*, so a missing MAC means no vertex, and then every
+# edge touching that device is skipped as unresolved.
+#
+# shared_with_meraki: true is documentation only; the loader does not read it.
+# It marks the three switches that also exist in config/topology.yaml.
+# ---------------------------------------------------------------------------
+devices:
+  # --- HQ Campus -----------------------------------------------------------
+  - hostname: "HQ-C9500-Core-01"
+    platform: "C9500-48Y4C"
+    family: "Switches and Hubs"
+    role: "CORE"
+    serial: "FCW2413L0A1"
+    mac: "58:8d:09:a1:01:01"
+    management_ip: "10.10.99.30"
+    site: "Data Hall"
+    software_version: "17.9.4a"
+    profile: "c9500-48y4c"
+    uptime_ms: 345600000
+    notes: "Campus core, first of pair. Default gateway for HQ VLANs."
+
+  - hostname: "HQ-C9500-Core-02"
+    platform: "C9500-48Y4C"
+    family: "Switches and Hubs"
+    role: "CORE"
+    serial: "FCW2413L0A2"
+    mac: "58:8d:09:a1:01:02"
+    management_ip: "10.10.99.31"
+    site: "Data Hall"
+    software_version: "17.9.4a"
+    profile: "c9500-48y4c"
+    uptime_ms: 345600000
+    notes: "Campus core, second of pair. VSS peer to Core-01."
+
+  - hostname: "HQ-ISR4431-Edge-01"
+    platform: "ISR4431/K9"
+    family: "Routers"
+    role: "BORDER ROUTER"
+    serial: "FTX2115A0B3"
+    mac: "00:11:22:a1:02:01"
+    management_ip: "10.10.99.32"
+    site: "Data Hall"
+    software_version: "17.9.4a"
+    profile: "isr4431"
+    uptime_ms: 518400000
+    notes: "HQ internet edge. Terminates the campus transit and the DC interconnect."
+
+  - hostname: "HQ-C9300-Access-F1-01"
+    platform: "C9300-48UXM"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2345L1C1"
+    mac: "58:8d:09:a1:03:01"
+    management_ip: "10.10.99.40"
+    site: "Floor 1"
+    software_version: "17.9.4a"
+    profile: "c9300-48uxm"
+    uptime_ms: 172800000
+    notes: "Floor 1 access — merchandising, finance, lobby."
+
+  - hostname: "HQ-C9300-Access-F1-02"
+    platform: "C9300-48UXM"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2345L1C2"
+    mac: "58:8d:09:a1:03:02"
+    management_ip: "10.10.99.41"
+    site: "Floor 1"
+    software_version: "17.9.4a"
+    profile: "c9300-48uxm"
+    uptime_ms: 172800000
+    notes: "Floor 1 access, stack peer."
+
+  - hostname: "HQ-C9300-Access-F2-01"
+    platform: "C9300-48P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2345L2D1"
+    mac: "58:8d:09:a1:04:01"
+    management_ip: "10.10.99.42"
+    site: "Floor 2"
+    software_version: "17.9.4a"
+    profile: "c9300-48p"
+    uptime_ms: 172800000
+    notes: "Floor 2 access — IT ops, marketing, executive wing."
+
+  - hostname: "HQ-C9800-WLC-01"
+    platform: "C9800-80-K9"
+    family: "Wireless Controller"
+    role: "ACCESS"
+    serial: "FCW2501W0E1"
+    mac: "58:8d:09:a1:05:01"
+    management_ip: "10.10.99.43"
+    site: "Data Hall"
+    software_version: "17.9.4"
+    profile: "c9800-80"
+    uptime_ms: 86400000
+    notes: "Campus wireless controller. Anchors all HQ C9120 APs."
+
+  - hostname: "HQ-C9120-AP-F1-01"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2430A1F1"
+    mac: "58:8d:09:a1:06:01"
+    management_ip: "10.10.50.101"
+    site: "Floor 1"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 172800000
+    notes: "Floor 1 lobby and merchandising coverage."
+
+  - hostname: "HQ-C9120-AP-F1-02"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2430A1F2"
+    mac: "58:8d:09:a1:06:02"
+    management_ip: "10.10.50.102"
+    site: "Floor 1"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 172800000
+    notes: "Floor 1 finance wing coverage."
+
+  - hostname: "HQ-C9120-AP-F1-03"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2430A1F3"
+    mac: "58:8d:09:a1:06:03"
+    management_ip: "10.10.50.103"
+    site: "Floor 1"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 172800000
+    notes: "Floor 1 open-plan coverage."
+
+  - hostname: "HQ-C9120-AP-F2-01"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2430A2G1"
+    mac: "58:8d:09:a1:06:04"
+    management_ip: "10.10.50.104"
+    site: "Floor 2"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 172800000
+    notes: "Floor 2 IT and marketing coverage."
+
+  - hostname: "HQ-C9120-AP-F2-02"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2430A2G2"
+    mac: "58:8d:09:a1:06:05"
+    management_ip: "10.10.50.105"
+    site: "Floor 2"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 172800000
+    notes: "Floor 2 executive wing coverage."
+
+  # Meraki switches discovered by Catalyst Center over SNMP mid-migration.
+  # Serial and MAC are copied verbatim from config/topology.yaml so NI fuses
+  # them into the vertices the Meraki add-on already created.
+  - hostname: "HQ-Seattle-Core-SW01"
+    platform: "MS350-48LP"
+    family: "Switches and Hubs"
+    role: "DISTRIBUTION"
+    serial: "Q2QN-HQ01-MS01"
+    mac: "0c:05:0a:01:02:01"
+    management_ip: "10.10.99.20"
+    site: "Data Hall"
+    software_version: "ms-15.53"
+    profile: "meraki-ms350-48lp"
+    uptime_ms: 604800000
+    shared_with_meraki: true
+    notes: "Meraki core distribution, managed from the dashboard. Discovered by Catalyst Center during migration; carries all VLANs including POS-PCI."
+
+  - hostname: "HQ-Seattle-Core-SW02"
+    platform: "MS350-48LP"
+    family: "Switches and Hubs"
+    role: "DISTRIBUTION"
+    serial: "Q2QN-HQ01-MS02"
+    mac: "0c:05:0a:01:02:02"
+    management_ip: "10.10.99.21"
+    site: "Data Hall"
+    software_version: "ms-15.53"
+    profile: "meraki-ms350-48lp"
+    uptime_ms: 604800000
+    shared_with_meraki: true
+    notes: "Meraki core distribution, stack peer to Core-SW01."
+
+  - hostname: "HQ-Seattle-Access-Floor1"
+    platform: "MS250-48LP"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "Q2QN-HQ01-MS03"
+    mac: "0c:05:0a:01:02:03"
+    management_ip: "10.10.99.22"
+    site: "Floor 1"
+    software_version: "ms-15.53"
+    profile: "meraki-ms250-48lp"
+    uptime_ms: 604800000
+    shared_with_meraki: true
+    notes: "Meraki floor 1 access. Still dashboard-managed; Catalyst Center sees it read-only."
+
+  # --- Data Centre ---------------------------------------------------------
+  - hostname: "DC-C9500-Spine-01"
+    platform: "C9500-32C"
+    family: "Switches and Hubs"
+    role: "CORE"
+    serial: "FCW2602S0H1"
+    mac: "58:8d:09:b2:01:01"
+    management_ip: "10.20.99.30"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9500-32c"
+    uptime_ms: 259200000
+    notes: "DC fabric spine 1. Leaf-spine, all 100G."
+
+  - hostname: "DC-C9500-Spine-02"
+    platform: "C9500-32C"
+    family: "Switches and Hubs"
+    role: "CORE"
+    serial: "FCW2602S0H2"
+    mac: "58:8d:09:b2:01:02"
+    management_ip: "10.20.99.31"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9500-32c"
+    uptime_ms: 259200000
+    notes: "DC fabric spine 2."
+
+  - hostname: "DC-C9300-Leaf-01"
+    platform: "C9300-48P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2603L0J1"
+    mac: "58:8d:09:b2:02:01"
+    management_ip: "10.20.99.40"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9300-48p"
+    uptime_ms: 259200000
+    notes: "Leaf 1 — rack rows A and B, order management and ERP."
+
+  - hostname: "DC-C9300-Leaf-02"
+    platform: "C9300-48P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2603L0J2"
+    mac: "58:8d:09:b2:02:02"
+    management_ip: "10.20.99.41"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9300-48p"
+    uptime_ms: 259200000
+    notes: "Leaf 2 — rack rows C and D, PCI logging estate."
+
+  - hostname: "DC-C9300-Leaf-03"
+    platform: "C9300-48P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2603L0J3"
+    mac: "58:8d:09:b2:02:03"
+    management_ip: "10.20.99.42"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9300-48p"
+    uptime_ms: 259200000
+    notes: "Leaf 3 — rack rows E and F, cold storage controllers."
+
+  - hostname: "DC-C9300-Leaf-04"
+    platform: "C9300-48P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2603L0J4"
+    mac: "58:8d:09:b2:02:04"
+    management_ip: "10.20.99.43"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "c9300-48p"
+    uptime_ms: 259200000
+    notes: "Leaf 4 — warehouse edge and sortation line."
+
+  - hostname: "DC-IE3400-Warehouse-01"
+    platform: "IE3400-8P2S-E"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2610I0K1"
+    mac: "58:8d:09:b2:03:01"
+    management_ip: "10.20.99.50"
+    site: "Warehouse"
+    software_version: "17.9.4"
+    profile: "ie3400-8p2s"
+    uptime_ms: 432000000
+    notes: "Industrial Ethernet on the warehouse floor. Sortation PLCs, conveyor sensors, forklift scanner APs."
+
+  - hostname: "DC-ISR4331-Edge-01"
+    platform: "ISR4331/K9"
+    family: "Routers"
+    role: "BORDER ROUTER"
+    serial: "FTX2230B0L1"
+    mac: "00:11:22:b2:04:01"
+    management_ip: "10.20.99.32"
+    site: "Server Room"
+    software_version: "17.9.4a"
+    profile: "isr4331"
+    uptime_ms: 604800000
+    notes: "DC edge. Interconnect to HQ and store Auto VPN concentration."
+
+  # --- Regional Offices ----------------------------------------------------
+  - hostname: "CHI-ISR4321-Edge-01"
+    platform: "ISR4321/K9"
+    family: "Routers"
+    role: "BORDER ROUTER"
+    serial: "FTX2340C0M1"
+    mac: "00:11:22:c3:01:01"
+    management_ip: "10.30.99.30"
+    site: "Floor 3"
+    software_version: "17.9.4a"
+    profile: "isr4321"
+    uptime_ms: 345600000
+    notes: "Chicago regional office edge. Backhaul to HQ for merchandising systems."
+
+  - hostname: "CHI-C9300-Access-01"
+    platform: "C9300-24P"
+    family: "Switches and Hubs"
+    role: "ACCESS"
+    serial: "FCW2340D0N1"
+    mac: "58:8d:09:c3:02:01"
+    management_ip: "10.30.99.31"
+    site: "Floor 3"
+    software_version: "17.9.4a"
+    profile: "c9300-24p"
+    uptime_ms: 345600000
+    notes: "Chicago floor 3 access — regional buying team and support desks."
+
+  - hostname: "CHI-C9120-AP-01"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2440E0P1"
+    mac: "58:8d:09:c3:03:01"
+    management_ip: "10.30.50.101"
+    site: "Floor 3"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 345600000
+    notes: "Chicago floor 3 west coverage."
+
+  - hostname: "CHI-C9120-AP-02"
+    platform: "C9120AXI-E"
+    family: "Unified AP"
+    role: "ACCESS"
+    serial: "FJC2440E0P2"
+    mac: "58:8d:09:c3:03:02"
+    management_ip: "10.30.50.102"
+    site: "Floor 3"
+    software_version: "17.9.4"
+    profile: "c9120-ap"
+    uptime_ms: 345600000
+    notes: "Chicago floor 3 east coverage."
+
+# ---------------------------------------------------------------------------
+# Physical topology. `source`/`target` name a device hostname and one of its
+# interface names; the loader resolves each to that interface's UUID, which is
+# what physical-topology emits as startPortID/endPortID. An unresolved name is
+# a load-time error, because NI silently drops an edge whose port IDs do not
+# match an interface vertex.
+#
+# Ports are NOT cabled by default: a profile expands to every port on the
+# chassis, and only the ones named here are UP. An uncabled port reporting UP
+# would make NI infer adjacency that does not exist.
+# ---------------------------------------------------------------------------
+links:
+  # HQ: edge router into the core pair, core peer link, core to access.
+  - source: {device: "HQ-ISR4431-Edge-01", port: "TenGigabitEthernet0/0/1"}
+    target: {device: "HQ-C9500-Core-01", port: "HundredGigE1/0/1"}
+  - source: {device: "HQ-ISR4431-Edge-01", port: "TenGigabitEthernet0/0/2"}
+    target: {device: "HQ-C9500-Core-02", port: "HundredGigE1/0/1"}
+  - source: {device: "HQ-C9500-Core-01", port: "HundredGigE1/0/4"}
+    target: {device: "HQ-C9500-Core-02", port: "HundredGigE1/0/4"}
+  - source: {device: "HQ-C9500-Core-01", port: "TwentyFiveGigE1/0/1"}
+    target: {device: "HQ-C9300-Access-F1-01", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "HQ-C9500-Core-02", port: "TwentyFiveGigE1/0/1"}
+    target: {device: "HQ-C9300-Access-F1-01", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "HQ-C9500-Core-01", port: "TwentyFiveGigE1/0/2"}
+    target: {device: "HQ-C9300-Access-F1-02", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "HQ-C9500-Core-02", port: "TwentyFiveGigE1/0/2"}
+    target: {device: "HQ-C9300-Access-F1-02", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "HQ-C9500-Core-01", port: "TwentyFiveGigE1/0/3"}
+    target: {device: "HQ-C9300-Access-F2-01", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "HQ-C9500-Core-02", port: "TwentyFiveGigE1/0/3"}
+    target: {device: "HQ-C9300-Access-F2-01", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "HQ-C9500-Core-01", port: "TwentyFiveGigE1/0/4"}
+    target: {device: "HQ-C9800-WLC-01", port: "TenGigabitEthernet1/1"}
+  - source: {device: "HQ-C9500-Core-02", port: "TwentyFiveGigE1/0/5"}
+    target: {device: "HQ-C9800-WLC-01", port: "TenGigabitEthernet1/2"}
+  # APs hang off their floor access switch.
+  - source: {device: "HQ-C9300-Access-F1-01", port: "GigabitEthernet1/0/10"}
+    target: {device: "HQ-C9120-AP-F1-01", port: "GigabitEthernet0/0/1"}
+  - source: {device: "HQ-C9300-Access-F1-01", port: "GigabitEthernet1/0/11"}
+    target: {device: "HQ-C9120-AP-F1-02", port: "GigabitEthernet0/0/1"}
+  - source: {device: "HQ-C9300-Access-F1-02", port: "GigabitEthernet1/0/12"}
+    target: {device: "HQ-C9120-AP-F1-03", port: "GigabitEthernet0/0/1"}
+  - source: {device: "HQ-C9300-Access-F2-01", port: "GigabitEthernet1/0/10"}
+    target: {device: "HQ-C9120-AP-F2-01", port: "GigabitEthernet0/0/1"}
+  - source: {device: "HQ-C9300-Access-F2-01", port: "GigabitEthernet1/0/11"}
+    target: {device: "HQ-C9120-AP-F2-02", port: "GigabitEthernet0/0/1"}
+  # The Meraki core pair, and its interconnect into the Catalyst core. This is
+  # the physical reason both management systems see one campus.
+  - source: {device: "HQ-Seattle-Core-SW01", port: "TenGigabitEthernet1/1"}
+    target: {device: "HQ-Seattle-Core-SW02", port: "TenGigabitEthernet1/1"}
+  - source: {device: "HQ-C9500-Core-01", port: "TwentyFiveGigE1/0/10"}
+    target: {device: "HQ-Seattle-Core-SW01", port: "TenGigabitEthernet1/2"}
+  - source: {device: "HQ-C9500-Core-02", port: "TwentyFiveGigE1/0/10"}
+    target: {device: "HQ-Seattle-Core-SW02", port: "TenGigabitEthernet1/2"}
+  - source: {device: "HQ-Seattle-Core-SW01", port: "GigabitEthernet1/1"}
+    target: {device: "HQ-Seattle-Access-Floor1", port: "TenGigabitEthernet1/1"}
+
+  # DC: leaf-spine, both spines to every leaf.
+  - source: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/1"}
+    target: {device: "DC-C9300-Leaf-01", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/1"}
+    target: {device: "DC-C9300-Leaf-01", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/2"}
+    target: {device: "DC-C9300-Leaf-02", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/2"}
+    target: {device: "DC-C9300-Leaf-02", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/3"}
+    target: {device: "DC-C9300-Leaf-03", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/3"}
+    target: {device: "DC-C9300-Leaf-03", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/4"}
+    target: {device: "DC-C9300-Leaf-04", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/4"}
+    target: {device: "DC-C9300-Leaf-04", port: "TenGigabitEthernet1/1/2"}
+  - source: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/32"}
+    target: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/32"}
+  - source: {device: "DC-ISR4331-Edge-01", port: "GigabitEthernet0/0/1"}
+    target: {device: "DC-C9500-Spine-01", port: "HundredGigE1/0/5"}
+  - source: {device: "DC-ISR4331-Edge-01", port: "GigabitEthernet0/0/2"}
+    target: {device: "DC-C9500-Spine-02", port: "HundredGigE1/0/5"}
+  - source: {device: "DC-C9300-Leaf-04", port: "GigabitEthernet1/0/20"}
+    target: {device: "DC-IE3400-Warehouse-01", port: "TenGigabitEthernet1/1"}
+
+  # Chicago regional office.
+  - source: {device: "CHI-ISR4321-Edge-01", port: "GigabitEthernet0/0/2"}
+    target: {device: "CHI-C9300-Access-01", port: "TenGigabitEthernet1/1/1"}
+  - source: {device: "CHI-C9300-Access-01", port: "GigabitEthernet1/0/10"}
+    target: {device: "CHI-C9120-AP-01", port: "GigabitEthernet0/0/1"}
+  - source: {device: "CHI-C9300-Access-01", port: "GigabitEthernet1/0/11"}
+    target: {device: "CHI-C9120-AP-02", port: "GigabitEthernet0/0/1"}
