@@ -23,6 +23,9 @@ web/topology-preview.html
 # Cisco/Splunk code must not be redistributed from this repo.
 .ni-inspect/
 
+# Integration notes describing third-party internals — local reference only.
+notes/
+
 # OS / editor
 .DS_Store
 Thumbs.db
