@@ -17,7 +17,11 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 CONTAINER = "emulanet-splunk"
-BASE = "http://host.docker.internal:5000/api/v1"
+BASE = "https://host.docker.internal:5000/api/v1"
+# The emulator's cert is self-signed. The container trusts it through the same
+# vendored certifi bundle the add-on's httpx client uses (the cert is appended
+# to it), so this check exercises the add-on's real trust path.
+CACERT = "/opt/splunk/etc/apps/Splunk_TA_cisco_meraki/lib/certifi/cacert.pem"
 KEY = "6789123456789012345678901234567890123456"
 ORG = "2947"
 
@@ -28,7 +32,7 @@ def curl(path: str) -> tuple[int, str]:
     """GET a path from inside the container; return (status, body)."""
     cmd = [
         "docker", "exec", CONTAINER, "curl", "-s", "-w", "\n%{http_code}",
-        "--max-time", "25",
+        "--max-time", "25", "--cacert", CACERT,
         "-H", f"X-Cisco-Meraki-API-Key: {KEY}",
         BASE + path,
     ]
@@ -81,7 +85,8 @@ print("=" * 78)
 print("\n[1] Container -> host reachability")
 p = subprocess.run(
     ["docker", "exec", CONTAINER, "curl", "-s", "--max-time", "15",
-     "http://host.docker.internal:5000/health"],
+     "--cacert", CACERT,
+     "https://host.docker.internal:5000/health"],
     capture_output=True, text=True, timeout=60)
 if '"devices"' in p.stdout:
     print(f"  PASS  host.docker.internal:5000 reachable -> {p.stdout.strip()}")
@@ -98,12 +103,25 @@ if status != 200:
 
 p = subprocess.run(
     ["docker", "exec", CONTAINER, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-     "--max-time", "15", "-H", "X-Cisco-Meraki-API-Key: wrong-key",
+     "--max-time", "15", "--cacert", CACERT,
+     "-H", "X-Cisco-Meraki-API-Key: wrong-key",
      f"{BASE}/organizations"],
     capture_output=True, text=True, timeout=60)
 print(f"  {'PASS' if p.stdout.strip() == '401' else 'FAIL'}  invalid API key -> HTTP {p.stdout.strip()} (expect 401)")
 if p.stdout.strip() != "401":
     FAILURES.append("invalid key rejected with 401")
+
+# Cisco's own SDK authenticates with `Authorization: Bearer <key>`; the real
+# Dashboard API accepts both forms, so the emulator must too.
+p = subprocess.run(
+    ["docker", "exec", CONTAINER, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+     "--max-time", "15", "--cacert", CACERT,
+     "-H", f"Authorization: Bearer {KEY}",
+     f"{BASE}/organizations"],
+    capture_output=True, text=True, timeout=60)
+print(f"  {'PASS' if p.stdout.strip() == '200' else 'FAIL'}  Bearer auth (SDK form) -> HTTP {p.stdout.strip()} (expect 200)")
+if p.stdout.strip() != "200":
+    FAILURES.append("bearer auth accepted")
 
 # ---------------------------------------------------------------------------
 print("\n[3] OpenAPI document the add-on uses for endpoint discovery")

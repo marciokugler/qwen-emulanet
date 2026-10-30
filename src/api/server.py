@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.datastructures import MutableHeaders
 import logging
 import zlib
 
@@ -33,6 +34,19 @@ def create_api_server(state: TopologyState, api_key: str) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def accept_bearer_api_key(request: Request, call_next):
+        """Cisco's own SDK authenticates with `Authorization: Bearer <key>`
+        (meraki/session/base.py) while older clients send X-Cisco-Meraki-API-Key.
+        The real Dashboard API accepts both, so translate the Bearer form into
+        the header every handler below already reads.
+        """
+        if "x-cisco-meraki-api-key" not in request.headers:
+            auth = request.headers.get("authorization", "")
+            if auth.startswith("Bearer "):
+                MutableHeaders(scope=request.scope)["X-Cisco-Meraki-API-Key"] = auth[7:]
+        return await call_next(request)
 
     async def verify_api_key(x_cisco_meraki_api_key: str = Header(None)):
         if x_cisco_meraki_api_key != api_key:

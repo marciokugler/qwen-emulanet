@@ -9,6 +9,9 @@ env/
 # Local config — may hold a real Splunk HEC token. Commit settings.example.yaml instead.
 config/settings.yaml
 
+# Self-signed TLS material for the API listener — regenerable, never commit a key
+config/tls/
+
 # Runtime artifacts
 logs/
 *.log

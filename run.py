@@ -462,24 +462,36 @@ async def main():
     dash_host = dashboard_config.get("host", "0.0.0.0")
     dash_port = dashboard_config.get("port", 8080)
 
+    # The Meraki add-on's account form validates Base URL against ^https://,
+    # because the real Dashboard API is HTTPS-only. Serving TLS here keeps the
+    # emulator configurable exactly like api.meraki.com.
+    tls_cert = server_config.get("tls_cert", "config/tls/server.crt")
+    tls_key = server_config.get("tls_key", "config/tls/server.key")
+    tls_enabled = Path(tls_cert).is_file() and Path(tls_key).is_file()
+    api_scheme = "https" if tls_enabled else "http"
+    tls_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key} if tls_enabled else {}
+
     background_task = asyncio.create_task(generate_background_data(state, settings))
 
     if settings.get("scenarios", {}).get("enabled", True):
         await scenario_engine.start()
 
-    logger.info(f"Starting Meraki API emulator on http://{api_host}:{api_port}")
+    logger.info(f"Starting Meraki API emulator on {api_scheme}://{api_host}:{api_port}")
     logger.info(f"Starting dashboard on http://{dash_host}:{dash_port}")
     logger.info(f"API Key: {settings['server']['api_key']}")
-    logger.info(f"Point Meraki Add-on Base URL to: http://<your-ip>:{api_port}/api/v1")
+    logger.info(
+        f"Point Meraki Add-on Base URL to: {api_scheme}://<your-ip>:{api_port} "
+        "(no /api/v1 — the add-on appends it itself)")
 
-    config_api = uvicorn.Config(api_app, host=api_host, port=api_port, log_level="warning")
+    config_api = uvicorn.Config(
+        api_app, host=api_host, port=api_port, log_level="warning", **tls_kwargs)
     config_dash = uvicorn.Config(dashboard_app, host=dash_host, port=dash_port, log_level="warning")
 
     server_api = uvicorn.Server(config_api)
     server_dash = uvicorn.Server(config_dash)
 
     verify_task = asyncio.create_task(
-        _verify_reachable(api_port, dash_port, settings["server"]["api_key"]))
+        _verify_reachable(api_port, dash_port, settings["server"]["api_key"], api_scheme))
 
     try:
         await asyncio.gather(
@@ -496,7 +508,8 @@ async def main():
             await hec_sender.close()
 
 
-async def _verify_reachable(api_port: int, dash_port: int, api_key: str):
+async def _verify_reachable(api_port: int, dash_port: int, api_key: str,
+                            api_scheme: str = "http"):
     """Confirm both servers actually answer on localhost.
 
     Binding 0.0.0.0:<port> can succeed while another process holds the more
@@ -508,7 +521,7 @@ async def _verify_reachable(api_port: int, dash_port: int, api_key: str):
 
     # (label, url, JSON keys that must be present to prove it is really us)
     checks = [
-        ("Meraki API", f"http://127.0.0.1:{api_port}/health", {"status", "devices", "networks"}),
+        ("Meraki API", f"{api_scheme}://127.0.0.1:{api_port}/health", {"status", "devices", "networks"}),
         ("Dashboard", f"http://127.0.0.1:{dash_port}/api/status",
          {"organization", "total_devices", "scenario_engine"}),
     ]
@@ -516,7 +529,10 @@ async def _verify_reachable(api_port: int, dash_port: int, api_key: str):
     for label, url, required_keys in checks:
         port = url.split(":")[2].split("/")[0]
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            # The API cert is self-signed; this check proves port ownership,
+            # not certificate trust.
+            client_kwargs = {"verify": False} if url.startswith("https") else {}
+            async with httpx.AsyncClient(timeout=8.0, **client_kwargs) as client:
                 resp = await client.get(url)
 
             if resp.status_code != 200:
@@ -544,9 +560,10 @@ async def _verify_reachable(api_port: int, dash_port: int, api_key: str):
 
     # Prove the API key path works, since the add-on depends on it.
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(
+                timeout=8.0, verify=api_scheme != "https") as client:
             resp = await client.get(
-                f"http://127.0.0.1:{api_port}/api/v1/organizations",
+                f"{api_scheme}://127.0.0.1:{api_port}/api/v1/organizations",
                 headers={"X-Cisco-Meraki-API-Key": api_key},
             )
         if resp.status_code == 200:

@@ -16,6 +16,7 @@ where actionable errors exclude the literal strings "port disconnected" and
 """
 
 import json
+import ssl
 import sys
 import time
 import urllib.request
@@ -23,11 +24,17 @@ import urllib.request
 sys.stdout.reconfigure(encoding="utf-8")
 
 DASH = "http://localhost:8081"
-API = "http://localhost:5000/api/v1"
+API = "https://localhost:5000/api/v1"
 KEY = "6789123456789012345678901234567890123456"
 ORG = "2947"
 SWITCH = "Q2QN-S042-MS01"
 NETWORK = "L_646829496405521106"
+
+# The API cert is self-signed and trusted inside the Splunk container, not on
+# this host; the scenario assertions care about payloads, not certificate chains.
+_API_SSL = ssl.create_default_context()
+_API_SSL.check_hostname = False
+_API_SSL.verify_mode = ssl.CERT_NONE
 
 FAILURES: list[str] = []
 
@@ -38,7 +45,7 @@ def get(path):
 
 def api(path):
     req = urllib.request.Request(API + path, headers={"X-Cisco-Meraki-API-Key": KEY})
-    return json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
+    return json.loads(urllib.request.urlopen(req, context=_API_SSL).read().decode("utf-8"))
 
 
 def post(path):

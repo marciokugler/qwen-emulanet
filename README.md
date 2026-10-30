@@ -37,7 +37,7 @@ cp config/settings.example.yaml config/settings.yaml
 python run.py
 ```
 
-- **Meraki API mock** → http://localhost:5000
+- **Meraki API mock** → https://localhost:5000 (self-signed TLS, see below)
 - **Dashboard** → http://localhost:8081
 - **API key** → `6789123456789012345678901234567890123456`
 
@@ -89,6 +89,40 @@ Both are free but need a Splunk.com login. Install from the Splunk UI
 > management APIs, so NI treats them as separate sources (`meraki`,
 > `catalyst_center`, `thousandeyes`).
 
+### TLS — the emulator serves HTTPS, like the real Dashboard API
+
+The add-on's account form rejects any Base URL not starting with `https://`,
+because `api.meraki.com` is HTTPS-only. `run.py` therefore serves the API over
+TLS whenever `config/tls/server.crt` and `config/tls/server.key` exist (paths
+overridable with `server.tls_cert` / `server.tls_key` in `config/settings.yaml`);
+without them it falls back to plain HTTP.
+
+The certificate is self-signed for `host.docker.internal`, `localhost` and
+`127.0.0.1`, valid ten years. Splunk's bundled Python ships `cryptography`
+while the host Python does not, so it is minted inside the container:
+
+```bash
+docker cp tools/mint_tls_cert.py emulanet-splunk:/tmp/mint_tls_cert.py
+docker exec -e LD_LIBRARY_PATH=/opt/splunk/lib -e CRYPTOGRAPHY_OPENSSL_NO_LEGACY=1 ^
+    emulanet-splunk /opt/splunk/bin/python3 /tmp/mint_tls_cert.py
+docker cp emulanet-splunk:/tmp/emulanet.crt config/tls/server.crt
+docker cp emulanet-splunk:/tmp/emulanet.key config/tls/server.key
+```
+
+Then teach the container to trust it. The add-on's httpx verifies against the
+**certifi bundle vendored inside the app**, not the system store, so that is
+the file to extend:
+
+```bash
+docker cp config/tls/server.crt emulanet-splunk:/opt/splunk/etc/auth/emulanet.crt
+docker exec -u root emulanet-splunk sh -c "chown splunk:splunk /opt/splunk/etc/auth/emulanet.crt && chmod 644 /opt/splunk/etc/auth/emulanet.crt"
+docker exec -u root emulanet-splunk sh -c "B=/opt/splunk/etc/apps/Splunk_TA_cisco_meraki/lib/certifi/cacert.pem; grep -q emulanet-emulator-ca $B || { printf '\n# emulanet-emulator-ca\n' >> $B; cat /opt/splunk/etc/auth/emulanet.crt >> $B; chown splunk:splunk $B; }"
+```
+
+Both steps survive `docker compose stop` / `start`. Recreating the container
+(`down`, or `up -d --force-recreate`) restores the image layer and the trust
+append must be repeated.
+
 ### Configure the Meraki Add-on
 
 The emulator runs on the **host**, not inside Splunk's container, so
@@ -96,11 +130,17 @@ The emulator runs on the **host**, not inside Splunk's container, so
 
 | Setting | Value |
 |---|---|
-| Base URL | `http://host.docker.internal:5000/api/v1` |
+| Base URL | `https://host.docker.internal:5000` |
 | API Key | `6789123456789012345678901234567890123456` |
 | Organization ID | `2947` |
-| Service Region | Global |
+| Service Region | `Other` (this is what unlocks the Base URL field) |
 | Index | `main` |
+
+> **No `/api/v1` suffix.** The add-on appends it itself
+> (`cisco_meraki_utils.py`: `base_url += "/api/v1"`), so typing it in the form
+> makes every call hit `/api/v1/api/v1/...` and fail with "Could not connect to
+> Meraki". The form also validates Base URL against `^https://`, because the
+> real Dashboard API is HTTPS-only — hence the emulator serves TLS.
 
 Creating the organization account also creates the **dedicated inputs**
 (`devices`, `devices/availabilities`, `switch/ports/bySwitch`,
