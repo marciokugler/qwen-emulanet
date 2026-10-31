@@ -26,6 +26,8 @@ python run.py
 | Emulator dashboard | `http://localhost:8081` |
 | API key | `6789123456789012345678901234567890123456` |
 | Organization ID | `2947` |
+| Catalyst Center API (HTTPS, self-signed) | `https://localhost:5001` |
+| Catalyst Center username / password | `northwind_admin` / `Emulanet2026!` |
 
 ## Demo topology — Northwind Retail Group (fictional)
 
@@ -35,6 +37,12 @@ switch → access points → cameras → sensor); the HQ firewall pair is the SD
 hub for the DC and the six stores. Business context is carried only through
 fields the real API exposes — VLAN and SSID names, device notes, tags and
 rack addresses. Details: [docs/topology.md](docs/topology.md).
+
+A second source emulates Cisco Catalyst Center for the campus core, data
+centre and a regional office (13 sites, 27 devices, 35 links). Three HQ
+switches appear in both sources, so analytics that join on serial or MAC show
+one estate assembled from two management systems. Details:
+[docs/catalyst.md](docs/catalyst.md).
 
 ## Scenarios
 
@@ -50,13 +58,15 @@ Full list and propagation rules: [docs/scenarios.md](docs/scenarios.md).
 ```
 config/
   topology.yaml          # Sites, devices, L2 cabling, VLANs, SSIDs, clients
+  catalyst_topology.yaml # Catalyst Center sites, devices, interfaces, links
   scenarios.yaml         # Retail scenarios with business impact
   settings.yaml          # Ports, API key, HEC target (gitignored)
   settings.example.yaml  # Template
   tls/                   # Self-signed cert and key (gitignored)
 src/
-  topology/              # YAML -> state, device/link/vlan/client models
+  topology/              # YAML -> state, Meraki and Catalyst Center models
   api/server.py          # Meraki Dashboard API mock (~110 GET routes)
+  api/catalyst_server.py # Catalyst Center API mock (token auth, 11 routes)
   data/                  # Topology, inventory, health, scenario responses
   webhooks/              # Webhook alert payloads and HEC delivery
 web/index.html           # Emulator dashboard: topology, sites, events, scenarios
@@ -69,10 +79,15 @@ verify_*.py              # Offline and live verification suites
 
 - [docs/topology.md](docs/topology.md) — the fictional network and its business context
 - [docs/scenarios.md](docs/scenarios.md) — scenario catalogue and propagation rules
+- [docs/catalyst.md](docs/catalyst.md) — the Catalyst Center source: estate, routes, configuration
+- [docs/verification.md](docs/verification.md) — what each verification suite proves
 
 ## Roadmap
 
 - [x] Meraki Dashboard API polling and webhooks
-- [ ] Catalyst Center / SD-WAN Manager style source (physical topology, site
-      topology, device health, issues)
+- [x] Catalyst Center source (physical topology, site topology, device
+      health, interfaces, issues)
+- [ ] Catalyst Center: scenario-driven issues and the remaining datasets
+      (client, network and site health, compliance, advisories, events)
+- [ ] SD-WAN Manager style source
 - [ ] ThousandEyes style source (synthetic tests, path visualization)

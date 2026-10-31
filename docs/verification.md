@@ -1,12 +1,14 @@
 # Verification
 
-Five suites assert behaviour rather than printing it. The first three run
-offline or against the emulator alone; the last two need the emulator running
-and, for `verify_splunk_e2e.py`, the local Splunk instance.
+Six suites assert behaviour rather than printing it. `verify_topology.py`,
+`verify_addon_contract.py` and `verify_catalyst_contract.py` run offline; the
+others need the emulator running and, for `verify_addon_live.py` and
+`verify_splunk_e2e.py`, the local Splunk instance.
 
 ```bash
-python verify_topology.py         # offline
-python verify_addon_contract.py   # offline
+python verify_topology.py           # offline
+python verify_addon_contract.py     # offline
+python verify_catalyst_contract.py  # offline
 python verify_addon_live.py       # live: emulator + Splunk container
 python verify_scenarios.py        # live: emulator (+ Splunk container)
 python verify_splunk_e2e.py       # live: emulator -> HEC -> Splunk search
@@ -38,6 +40,30 @@ python verify_splunk_e2e.py       # live: emulator -> HEC -> Splunk search
   including value-format rules (speeds as strings, disconnect enums).
 - Finishes by exercising **all ~110 GET routes** and failing on any 5xx — this
   is what caught two handlers that had returned 500 since they were written.
+
+## verify_catalyst_contract.py — the Catalyst Center contract holds
+
+Builds the Catalyst Center app in-process and calls it through a test client
+(see [catalyst.md](catalyst.md) and `notes/catalyst-addon-contract.md`):
+
+- token exchange returns `Token` with exact casing; a wrong password, missing
+  credentials, a missing token and an unknown token all get 401, never 403;
+- inventory count equals the inventory length; inventory, interface and issue
+  paging honour the requested offset and limit, and issues echo them back;
+- device health scores sit in the bands the downstream analytics grades as
+  healthy, with the exact radio key spellings;
+- every interface of every device is returned with estate-unique ids, and the
+  bulk interface route returns 404 rather than a redirect;
+- physical topology is one object whose 35 links all resolve to known device
+  and interface ids, all operationally up;
+- issues are sorted by first occurrence and carry every field the collector
+  emits;
+- serials and MACs are unique, and exactly the three intended HQ switches are
+  shared with the Meraki estate;
+- every registered route answers without a 5xx.
+
+The endpoint-catalog check reads the locally extracted add-on under
+`.ni-inspect/` and is skipped when it is absent.
 
 ## verify_addon_live.py — reachable the way the collector reaches it
 
